@@ -1,0 +1,20 @@
+ollama:
+  gpu:
+    enabled: false
+
+  models:
+    pull:
+      - qwen2.5:0.5b
+
+persistentVolume:
+  enabled: true
+  size: 5Gi
+  # Al no especificar storageClass, Kubernetes usará Cinder por defecto
+
+resources:
+  limits:
+    cpu: "2"
+    memory: 1Gi
+  requests:
+    cpu: "1"
+    memory: 512Mi
