@@ -3,6 +3,10 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Database configuration
 DATABASE_URL = os.getenv(
@@ -10,7 +14,25 @@ DATABASE_URL = os.getenv(
     "postgresql://user:password@localhost:5432/telephone_db"
 )
 
-engine = create_engine(DATABASE_URL, echo=False)
+# Create engine with connection retry logic
+def create_engine_with_retries(url, max_retries=5, retry_delay=2):
+    """Create SQLAlchemy engine with retry logic for connection failures."""
+    for attempt in range(max_retries):
+        try:
+            engine = create_engine(url, echo=False, pool_pre_ping=True)
+            # Test connection
+            with engine.connect() as conn:
+                logger.info("Database connection successful")
+                return engine
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to connect to database after {max_retries} attempts")
+                raise
+
+engine = create_engine_with_retries(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
