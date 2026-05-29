@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements 
+COPY code/requirements-api.txt requirements-api.txt
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements-api.txt
+
+# Copy application code
+COPY code/ .
+
+# Run worker (WORKER_ID comes from environment variable in docker-compose.yml)
+CMD ["python", "worker.py"]
