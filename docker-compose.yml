@@ -149,7 +149,27 @@ services:
     networks:
       - telephone_network
     restart: unless-stopped
-
+#llm worker
+  llm-worker:
+    build:
+      context: .
+      dockerfile: config/docker/Dockerfile.llm_worker
+    container_name: telephone_llm_worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://user:devpassword123@postgres:5432/telephone_db}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672//}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:0.5b}
+      LLM_BATCH_SIZE: "3"
+      LLM_BATCH_TIMEOUT: "10"
+    networks:
+      - telephone_network
+    restart: unless-stopped
   # CLI Client
   cli:
     build:
