@@ -25,13 +25,13 @@ from datetime import datetime
 
 import pika
 import requests
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
 # Config desde env
 # ---------------------------------------------------------------------------
-RABBITMQ_URL        = os.getenv("RABBITMQ_URL",        "amqp://guest:guest@rabbitmq:5672//")
+RABBITMQ_URL        = os.getenv("RABBITMQ_URL",        "amqp://guest:guest@rabbitmq:5672/%2F")
 DATABASE_URL        = os.getenv("DATABASE_URL",        "postgresql://user:devpassword123@postgres:5432/telephone_db")
 OLLAMA_URL          = os.getenv("OLLAMA_URL",          "http://ollama:11434")
 OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "qwen2.5:0.5b")
@@ -54,8 +54,7 @@ log = logging.getLogger("llm-worker")
 # ---------------------------------------------------------------------------
 # DB — importamos los modelos del proyecto
 # ---------------------------------------------------------------------------
-# Si models.py está en el mismo directorio:
-from models import Job, Guess, init_db
+from database import Job, Guess, init_db
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -292,15 +291,18 @@ def wait_for_ollama(max_retries=20, delay=5):
 def wait_for_postgres(max_retries=20, delay=5):
     log.info("Esperando PostgreSQL ...")
     for i in range(max_retries):
+        db = None
         try:
             db = SessionLocal()
-            db.execute("SELECT 1")
-            db.close()
+            db.execute(text("SELECT 1"))
             log.info("PostgreSQL disponible.")
             return
         except Exception as e:
             log.info(f"PostgreSQL no disponible ({e}) — reintento {i+1}/{max_retries} en {delay}s ...")
             time.sleep(delay)
+        finally:
+            if db is not None:
+                db.close()
     raise RuntimeError("No se pudo conectar a PostgreSQL")
 
 
@@ -308,10 +310,24 @@ def wait_for_rabbitmq(max_retries=20, delay=5) -> pika.BlockingConnection:
     log.info(f"Conectando a RabbitMQ en {RABBITMQ_URL} ...")
     for i in range(max_retries):
         try:
-            params = pika.URLParameters(RABBITMQ_URL)
-            params.heartbeat = 600
-            params.blocked_connection_timeout = 300
-            conn = pika.BlockingConnection(params)
+            from urllib.parse import urlparse, unquote
+
+            parsed = urlparse(RABBITMQ_URL)
+            credentials = pika.PlainCredentials(
+                parsed.username or "guest",
+                parsed.password or "guest",
+            )
+            virtual_host = unquote(parsed.path.lstrip("/") or "/")
+            conn = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host=parsed.hostname or "rabbitmq",
+                    port=parsed.port or 5672,
+                    virtual_host=virtual_host,
+                    credentials=credentials,
+                    heartbeat=600,
+                    blocked_connection_timeout=300,
+                )
+            )
             log.info("RabbitMQ conectado.")
             return conn
         except Exception as e:

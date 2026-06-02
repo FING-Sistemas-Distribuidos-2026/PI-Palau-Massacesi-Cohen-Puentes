@@ -430,6 +430,9 @@ async def stream_guesses(job_id: str, db: Session = Depends(get_db)):
             logger.error(f"SSE error for job {job_id}: {e}")
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/job/{job_id}/guesses")
 async def get_guesses(job_id: str, db: Session = Depends(get_db)):
     """
     GET /job/{id}/guesses
@@ -478,6 +481,9 @@ async def list_jobs(db: Session = Depends(get_db)):
         completed_count = db.query(DistortedPhrase).filter(
             DistortedPhrase.job_id == job.id
         ).count()
+        effective_status = (
+            JobStatus.COMPLETED if completed_count == job.num_workers else job.status
+        )
         progress = (completed_count / job.num_workers * 100) if job.num_workers > 0 else 0
         
         result.append({
@@ -486,7 +492,7 @@ async def list_jobs(db: Session = Depends(get_db)):
             "num_workers": job.num_workers,
             "completed_workers": completed_count,
             "progress_percentage": round(progress, 2),
-            "status": job.status,
+            "status": effective_status,
             "created_at": job.created_at.isoformat()
         })
     

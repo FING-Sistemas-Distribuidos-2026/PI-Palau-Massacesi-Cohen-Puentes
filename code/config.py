@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://user:devpassword123@localhost:5432/telephone_db"
     
     # RabbitMQ Configuration
-    rabbitmq_url: str = "amqp://guest:guest@localhost:5672//"
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
     
     # Ollama Configuration
     ollama_url: str = "http://localhost:11434"
