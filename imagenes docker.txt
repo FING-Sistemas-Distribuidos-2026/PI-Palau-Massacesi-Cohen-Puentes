@@ -1,0 +1,3 @@
+lutespatella/telephone-api:v1
+lutespatella/telephone-llm_worker:v1
+lutespatella/telephone-worker:v1
