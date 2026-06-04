@@ -64,7 +64,7 @@ def get_rabbitmq_connection():
 
 
 def setup_worker_queue():
-    """Setup shared job queue and results queue."""
+    """Setup stream queues for jobs and results."""
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
@@ -76,10 +76,14 @@ def setup_worker_queue():
             durable=True
         )
         
-        # Declare SHARED jobs queue (all workers consume from here)
+        # Declare jobs stream queue
         channel.queue_declare(
             queue=RabbitMQConfig.JOBS_QUEUE,
-            durable=True
+            durable=True,
+            arguments={
+                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
+                "x-max-age": RabbitMQConfig.JOBS_STREAM_MAX_AGE,
+            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -87,10 +91,14 @@ def setup_worker_queue():
             routing_key=RabbitMQConfig.ROUTING_KEY_JOBS
         )
         
-        # Declare results queue (where workers publish)
+        # Declare results stream queue (where workers publish)
         channel.queue_declare(
             queue=RabbitMQConfig.RESULTS_QUEUE,
-            durable=True
+            durable=True,
+            arguments={
+                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
+                "x-max-age": RabbitMQConfig.RESULTS_STREAM_MAX_AGE,
+            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -110,14 +118,15 @@ def process_message(message: dict) -> dict:
     Process a job message: distort phrase and create result message.
     
     Args:
-        message: {job_id, phrase, worker_id}
+        message: {job_id, phrase, num_workers}
     
     Returns:
         result: {job_id, worker_id, distorted_phrase}
     """
     job_id = message['job_id']
     phrase = message['phrase']
-    worker_id = message['worker_id']
+    worker_id = WORKER_ID
+    num_workers = int(message.get('num_workers', 0))
     
     try:
         # Apply distortion
@@ -146,7 +155,7 @@ def process_message(message: dict) -> dict:
             db.close()
         
         # Create result message
-        result = MessageFormats.result_message(job_id, worker_id, distorted_phrase)
+        result = MessageFormats.result_message(job_id, worker_id, distorted_phrase, num_workers)
         return result
     
     except Exception as e:
@@ -197,7 +206,7 @@ def consume_jobs():
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         
-        # Consume from SHARED jobs queue
+        # Consume from jobs stream queue
         jobs_queue = RabbitMQConfig.JOBS_QUEUE
         
         # Set prefetch to 1 (process one message at a time)
@@ -224,13 +233,14 @@ def consume_jobs():
                 # Reject and requeue
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         
-        # Start consuming from shared queue
+        # Stream offset=next avoids replaying old retained messages on new consumers.
         channel.basic_consume(
             queue=jobs_queue,
-            on_message_callback=callback
+            on_message_callback=callback,
+            arguments={"x-stream-offset": RabbitMQConfig.STREAM_CONSUMER_OFFSET},
         )
         
-        logger.info(f"Worker {WORKER_ID} listening on shared queue {jobs_queue}")
+        logger.info(f"Worker {WORKER_ID} listening on jobs stream {jobs_queue} (offset={RabbitMQConfig.STREAM_CONSUMER_OFFSET})")
         channel.start_consuming()
     
     except KeyboardInterrupt:

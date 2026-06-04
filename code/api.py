@@ -67,7 +67,7 @@ def get_rabbitmq_connection():
 
 
 def setup_rabbitmq():
-    """Setup RabbitMQ exchange and shared queues."""
+    """Setup RabbitMQ exchange and stream queues."""
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
@@ -79,10 +79,14 @@ def setup_rabbitmq():
             durable=True
         )
         
-        # Declare shared jobs queue
+        # Declare jobs stream queue
         channel.queue_declare(
             queue=RabbitMQConfig.JOBS_QUEUE,
-            durable=True
+            durable=True,
+            arguments={
+                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
+                "x-max-age": RabbitMQConfig.JOBS_STREAM_MAX_AGE,
+            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -90,10 +94,14 @@ def setup_rabbitmq():
             routing_key=RabbitMQConfig.ROUTING_KEY_JOBS
         )
         
-        # Declare results queue
+        # Declare results stream queue
         channel.queue_declare(
             queue=RabbitMQConfig.RESULTS_QUEUE,
-            durable=True
+            durable=True,
+            arguments={
+                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
+                "x-max-age": RabbitMQConfig.RESULTS_STREAM_MAX_AGE,
+            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -109,46 +117,30 @@ def setup_rabbitmq():
 
 def publish_job_to_workers(job_id: str, phrase: str, num_workers: int):
     """
-    Publish job to N workers via RabbitMQ.
-    Publishes N copies of the message (one per worker) to the JOBS_QUEUE.
-    Workers consume from the shared queue and process their assigned copy.
+    Publica N mensajes individuales al stream. 
+    Cualquier worker libre irá tomando las réplicas secuencialmente.
     """
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         
-        # Declare exchange
-        channel.exchange_declare(
-            exchange=RabbitMQConfig.EXCHANGE_NAME,
-            exchange_type=RabbitMQConfig.EXCHANGE_TYPE,
-            durable=True
-        )
-        
-        # Declare jobs queue
-        channel.queue_declare(
-            queue=RabbitMQConfig.JOBS_QUEUE,
-            durable=True
-        )
-        channel.queue_bind(
-            exchange=RabbitMQConfig.EXCHANGE_NAME,
-            queue=RabbitMQConfig.JOBS_QUEUE,
-            routing_key=RabbitMQConfig.ROUTING_KEY_JOBS
-        )
-        
-        # Publish N copies of the message (one for each worker)
-        for worker_id in range(num_workers):
-            # Create message with worker_id
-            message = MessageFormats.job_message(job_id, phrase, worker_id)
+        # Enviamos N copias individuales al Stream
+        for replica_id in range(1, num_workers + 1):
+            message = {
+                "job_id": job_id,
+                "phrase": phrase,
+                "num_workers": num_workers,
+                "replica_id": replica_id  # <--- Esto identifica qué copia está procesando
+            }
             
-            # Publish to shared JOBS_QUEUE
             channel.basic_publish(
                 exchange=RabbitMQConfig.EXCHANGE_NAME,
                 routing_key=RabbitMQConfig.ROUTING_KEY_JOBS,
                 body=json.dumps(message),
-                properties=pika.BasicProperties(delivery_mode=2)  # Persistent
+                properties=pika.BasicProperties(delivery_mode=2),
             )
-            logger.info(f"Published job {job_id} copy {worker_id} to shared queue")
-        
+            
+        logger.info(f"Published {num_workers} task replicas for job {job_id} to stream")
         connection.close()
     except Exception as e:
         logger.error(f"Failed to publish job to workers: {e}")

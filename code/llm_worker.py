@@ -3,16 +3,6 @@ llm_worker.py
 -------------
 Servicio que consume frases distorsionadas de la cola RabbitMQ (`telephone.results`),
 las agrupa en batches por job, y consulta a Ollama para reconstruir la frase original.
-
-Persiste los resultados usando SQLAlchemy con el mismo modelo definido en models.py.
-
-Flujo:
-  RabbitMQ cola `telephone.results`
-    └─> acumular por job_id
-        └─> cuando batch_size >= BATCH_SIZE  ó  timeout >= BATCH_TIMEOUT_SEC
-            └─> llamar Ollama /api/generate
-                └─> guardar Guess en PostgreSQL
-                    └─> marcar Job como 'completed' si ya llegaron todos los workers
 """
 
 import os
@@ -20,6 +10,7 @@ import json
 import time
 import logging
 import threading
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -34,13 +25,16 @@ from sqlalchemy.orm import sessionmaker
 RABBITMQ_URL        = os.getenv("RABBITMQ_URL",        "amqp://guest:guest@rabbitmq:5672/%2F")
 DATABASE_URL        = os.getenv("DATABASE_URL",        "postgresql://user:devpassword123@postgres:5432/telephone_db")
 OLLAMA_URL          = os.getenv("OLLAMA_URL",          "http://ollama:11434")
-OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "qwen2.5:0.5b")
+OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "llama3.2:1b")
 LOG_LEVEL           = os.getenv("LOG_LEVEL",           "INFO")
 BATCH_SIZE          = int(os.getenv("LLM_BATCH_SIZE",    "3"))
-BATCH_TIMEOUT_SEC   = float(os.getenv("LLM_BATCH_TIMEOUT", "10"))
+BATCH_TIMEOUT_SEC   = float(os.getenv("LLM_BATCH_TIMEOUT", "20"))
+STREAM_OFFSET       = os.getenv("LLM_STREAM_OFFSET", "next")
 
 QUEUE_NAME    = "telephone.results"
 EXCHANGE_NAME = "telephone"
+ROUTING_KEY_RESULTS = "results"
+RESULTS_STREAM_MAX_AGE = os.getenv("RESULTS_STREAM_MAX_AGE", "2h")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -60,78 +54,94 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ---------------------------------------------------------------------------
-# Buffer en memoria: acumula frases por job hasta armar un batch
+# Buffer en memoria y Locks de control de concurrencia
 # ---------------------------------------------------------------------------
-# job_id -> {"phrases": [...], "total": int, "received": int, "last_ts": float, "batch_num": int}
+# Estructura del buffer protegida con estados de procesamiento
 job_buffers: dict = defaultdict(lambda: {
     "phrases":   [],
     "total":     0,
     "received":  0,
     "last_ts":   time.monotonic(),
     "batch_num": 0,
+    "is_processing": False, # Nuevo: Evita que el flusher duplique tareas activas
 })
 buffers_lock = threading.Lock()
+ollama_global_lock = threading.Lock() # Nuevo: Fuerza a Ollama a procesar de a UN lote a la vez
 
 # ---------------------------------------------------------------------------
 # Ollama
 # ---------------------------------------------------------------------------
 def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, str]:
-    """
-    Llama a Ollama con las frases distorsionadas del batch.
-    Devuelve (guess_text, raw_response).
-    """
-    numbered = "\n".join(f"  {i+1}. {p}" for i, p in enumerate(phrases))
-    prompt = (
-        "Sos un experto en reconstrucción de texto. "
-        "Las siguientes frases son versiones distorsionadas (con ruido, errores tipográficos "
-        "y cambios de palabras) de UNA MISMA frase original en español.\n\n"
-        f"Versiones distorsionadas:\n{numbered}\n\n"
-        "¿Cuál crees que era la frase original? "
-        "Responde ÚNICAMENTE con la frase reconstruida, sin explicaciones, "
-        "sin comillas, sin prefijos."
-    )
-
-    try:
-        resp = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model":  OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 128},
+    # Unimos las frases del lote separadas por un salto de línea limpio
+    lineas_entrada = "\n".join(phrases)
+    
+    url = f"{OLLAMA_URL}/api/chat"
+    
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Eres un corrector ortográfico automatizado. Tu única tarea es corregir los "
+                    "errores de tipeo del texto en español que te proporciona el usuario.\n"
+                    "REGLAS:\n"
+                    "- Devuelve únicamente el texto corregido.\n"
+                    "- Mantén exactamente el mismo número de líneas que recibes.\n"
+                    "- No agregues introducciones, explicaciones, ni viñetas (-)."
+                )
             },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data        = resp.json()
-        raw         = json.dumps(data, ensure_ascii=False)
-        guess       = data.get("response", "").strip()
-        log.info(f"[job={job_id[:8]}] Ollama batch={batch_num} → '{guess}'")
-        return guess, raw
+            {
+                "role": "user",
+                "content": f"Corrige las siguientes líneas de texto:\n{lineas_entrada}"
+            }
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "num_predict": 150
+        }
+    }
 
-    except requests.exceptions.Timeout:
-        log.error(f"[job={job_id[:8]}] Timeout llamando a Ollama")
-        return "[timeout]", ""
-    except Exception as e:
-        log.error(f"[job={job_id[:8]}] Error Ollama: {e}")
-        return "[error]", ""
+    with ollama_global_lock:
+        try:
+            resp = requests.post(url, json=payload, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            raw = json.dumps(data, ensure_ascii=False)
+            
+            log.info(f"[DEBUG CHAT CONTENT]: {raw}")
 
+            guess = ""
+            message_obj = data.get("message", {})
 
+            if "content" in message_obj and message_obj["content"].strip():
+                # Obtenemos la respuesta limpia y podamos espacios sobrantes
+                lines = [l.strip() for l in message_obj["content"].strip().split("\n") if l.strip()]
+                # Removemos guiones o viñetas molestas que Llama a veces mete por reflejo
+                lines_cleaned = [re.sub(r"^[-*•]\s*", "", l) for l in lines]
+                guess = "\n".join(lines_cleaned)
+
+            if not guess:
+                guess = "[No se obtuvo respuesta limpia del modelo]"
+
+            log.info(f"[job={job_id[:8]}] Ollama batch={batch_num} → '{guess}'")
+            return guess, raw
+
+        except Exception as e:
+            log.error(f"[job={job_id[:8]}] Error Ollama: {e}")
+            return "[error]", ""
 # ---------------------------------------------------------------------------
 # Procesamiento de un batch
 # ---------------------------------------------------------------------------
-def process_batch(job_id: str, phrases: list[str], batch_num: int, received: int, total: int):
-    """Llama a Ollama, guarda el Guess y actualiza el Job si corresponde."""
-    log.info(
-        f"[job={job_id[:8]}] Procesando batch={batch_num} "
-        f"| frases_en_batch={len(phrases)} | recibidas={received}/{total}"
-    )
+def process_batch(job_id: str, phrases: list[str], batch_num: int, received_at_moment: int, total: int):
+    log.info(f"[job={job_id[:8]}] Procesando batch={batch_num} | frases_en_batch={len(phrases)}")
 
     guess_text, ollama_raw = call_ollama(phrases, job_id, batch_num)
 
     db = SessionLocal()
     try:
-        # Guardar el guess
         guess = Guess(
             job_id=job_id,
             batch_num=batch_num,
@@ -139,41 +149,35 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int, received: int
             ollama_response=ollama_raw,
         )
         db.add(guess)
-
-        # Si ya llegaron todos los workers, marcar job como completado
-        if total > 0 and received >= total:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job and job.status != "completed":
-                job.status = "completed"
-                log.info(f"[job={job_id[:8]}] Marcado como 'completed'.")
-
         db.commit()
-        log.debug(f"[job={job_id[:8]}] Guess batch={batch_num} guardado en DB.")
+
+        # Evaluamos el cierre del JOB consultando los totales reales y el número de batch
+        with buffers_lock:
+            buf = job_buffers.get(job_id)
+            
+            # Condición segura: Si ya recibimos todo lo esperado y estamos procesando el lote final (batch 3)
+            if buf and buf["total"] > 0 and received_at_moment >= buf["total"]:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job and job.status != "completed":
+                    job.status = "completed"
+                    db.commit()
+                    log.info(f"[job={job_id[:8]}] ¡Todas las réplicas procesadas! Marcado como 'completed'.")
+                    
+                    # Ahora sí borramos el buffer de memoria de forma segura
+                    del job_buffers[job_id]
 
     except Exception as e:
         db.rollback()
         log.error(f"[job={job_id[:8]}] Error guardando en DB: {e}")
     finally:
         db.close()
-
-
 # ---------------------------------------------------------------------------
 # RabbitMQ: callback por mensaje
 # ---------------------------------------------------------------------------
 def on_message(channel, method, properties, body):
-    """
-    Formato esperado del mensaje JSON:
-    {
-        "job_id":           "string-id-del-job",
-        "worker_id":        1,
-        "distorted_phrase": "frase con ruido",
-        "num_workers":      5
-    }
-    """
     try:
         data = json.loads(body.decode())
     except Exception as e:
-        log.warning(f"Mensaje no parseable: {e} | body={body[:200]}")
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
@@ -182,13 +186,9 @@ def on_message(channel, method, properties, body):
     num_workers = int(data.get("num_workers", 0))
 
     if not job_id or not distorted:
-        log.warning(f"Mensaje incompleto ignorado: {data}")
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    log.debug(f"[job={job_id[:8]}] Recibido worker_id={data.get('worker_id')} | '{distorted}'")
-
-    # Variables para procesar fuera del lock
     flush_phrases    = None
     flush_batch_num  = None
     flush_received   = None
@@ -196,63 +196,65 @@ def on_message(channel, method, properties, body):
 
     with buffers_lock:
         buf = job_buffers[job_id]
-
         if num_workers > 0:
             buf["total"] = num_workers
 
+        # 1. Acumulamos SIEMPRE en la lista histórica del buffer
+        # 1. Acumulamos la frase en el buffer histórico
         buf["phrases"].append(distorted)
         buf["received"] += 1
-        buf["last_ts"]   = time.monotonic()
+        
+        # Guardamos cuántas frases tenemos en este instante exacto de la ejecución
+        current_count = buf["received"] 
 
-        received_now = buf["received"]
-        total_now    = buf["total"]
+        
+        # 2. Control estricto de disparadores usando porciones disjuntas (Slicing limpio)
+        disparar_batch = False
+        
+        if current_count == 3:
+            buf["batch_num"] = 1
+            flush_phrases = buf["phrases"][0:3]  # Frases 1, 2 y 3
+            disparar_batch = True
+        elif current_count == 6:
+            buf["batch_num"] = 2
+            flush_phrases = buf["phrases"][3:6]  # Frases 4, 5 y 6
+            disparar_batch = True
+        elif current_count == buf["total"] or current_count == 9:
+            buf["batch_num"] = 3
+            flush_phrases = buf["phrases"][6:9]  # Frases 7, 8 y 9 (o hasta el total)
+            disparar_batch = True
 
-        # Hacer flush cuando:
-        #   a) se llenó el batch configurado
-        #   b) llegaron TODOS los workers del job (flush final obligatorio)
-        should_flush = (
-            len(buf["phrases"]) >= BATCH_SIZE
-            or (total_now > 0 and received_now >= total_now)
-        )
+        if disparar_batch:
+            # Ya extrajimos la porción exacta arriba, solo congelamos los metadatos
+            flush_batch_num = buf["batch_num"]
+            flush_received = current_count
+            flush_total = buf["total"]
 
-        if should_flush:
-            flush_phrases    = buf["phrases"][:]
-            buf["batch_num"] += 1
-            flush_batch_num  = buf["batch_num"]
-            flush_received   = received_now
-            flush_total      = total_now
-            buf["phrases"]   = []   # resetear sólo las frases; received/total siguen acumulando
-
-    # ACK siempre antes del procesamiento pesado
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
+    # Disparamos el hilo asíncrono para Ollama solo si cumplió la condición de los 3 pasos
     if flush_phrases:
-        t = threading.Thread(
+        threading.Thread(
             target=process_batch,
             args=(job_id, flush_phrases, flush_batch_num, flush_received, flush_total),
             daemon=True,
-        )
-        t.start()
-
+        ).start()
 
 # ---------------------------------------------------------------------------
-# Hilo de timeout: flush forzado si un batch lleva demasiado tiempo abierto
+# Hilo de timeout: flush forzado
 # ---------------------------------------------------------------------------
 def timeout_flusher():
-    """
-    Revisa periódicamente todos los buffers.
-    Si el último mensaje de un job llegó hace más de BATCH_TIMEOUT_SEC
-    y quedan frases sin procesar, hace flush igual.
-    """
     while True:
-        time.sleep(max(1.0, BATCH_TIMEOUT_SEC / 2))
+        time.sleep(5.0)
         now = time.monotonic()
-
         to_flush = []
+
         with buffers_lock:
             for job_id, buf in list(job_buffers.items()):
                 if not buf["phrases"]:
                     continue
+                
+                # Si pasaron los segundos de timeout sin recibir nada nuevo, forzamos lo que haya
                 if (now - buf["last_ts"]) >= BATCH_TIMEOUT_SEC:
                     buf["batch_num"] += 1
                     to_flush.append((
@@ -265,11 +267,8 @@ def timeout_flusher():
                     buf["phrases"] = []
 
         for args in to_flush:
-            job_id = args[0]
-            log.info(f"[job={job_id[:8]}] Timeout flush: {len(args[1])} frases")
+            log.info(f"[job={args[0][:8]}] Timeout alcanzado en buffer. Forzando batch {args[2]}.")
             threading.Thread(target=process_batch, args=args, daemon=True).start()
-
-
 # ---------------------------------------------------------------------------
 # Esperas con retry
 # ---------------------------------------------------------------------------
@@ -344,41 +343,44 @@ def main():
     log.info(f"BATCH_SIZE={BATCH_SIZE} | BATCH_TIMEOUT={BATCH_TIMEOUT_SEC}s | MODEL={OLLAMA_MODEL}")
 
     wait_for_postgres()
-    # init_db() crea las tablas si no existen (idempotente)
     init_db()
     wait_for_ollama()
 
-    # Hilo de timeout en background
     threading.Thread(target=timeout_flusher, daemon=True).start()
 
-    # Loop principal con reconexión automática a RabbitMQ
     while True:
         try:
             rmq_conn = wait_for_rabbitmq()
             channel  = rmq_conn.channel()
 
-            # Declaraciones idempotentes
             channel.exchange_declare(
                 exchange=EXCHANGE_NAME,
                 exchange_type="direct",
                 durable=True,
             )
-            channel.queue_declare(queue=QUEUE_NAME, durable=True)
+            channel.queue_declare(
+                queue=QUEUE_NAME,
+                durable=True,
+                arguments={
+                    "x-queue-type": "stream",
+                    "x-max-age": RESULTS_STREAM_MAX_AGE,
+                },
+            )
             channel.queue_bind(
                 queue=QUEUE_NAME,
                 exchange=EXCHANGE_NAME,
-                routing_key=QUEUE_NAME,
+                routing_key=ROUTING_KEY_RESULTS,
             )
 
-            # prefetch=1: no tomar otro mensaje hasta terminar el actual
             channel.basic_qos(prefetch_count=1)
             channel.basic_consume(
                 queue=QUEUE_NAME,
                 on_message_callback=on_message,
                 auto_ack=False,
+                arguments={"x-stream-offset": STREAM_OFFSET},
             )
 
-            log.info(f"Consumiendo cola '{QUEUE_NAME}' ...")
+            log.info(f"Consumiendo stream '{QUEUE_NAME}' (offset={STREAM_OFFSET}) ...")
             channel.start_consuming()
 
         except KeyboardInterrupt:

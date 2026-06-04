@@ -4,7 +4,7 @@ ollama:
 
   models:
     pull:
-      - qwen2.5:0.5b
+      - llama3.2:1b
 
 persistentVolume:
   enabled: true

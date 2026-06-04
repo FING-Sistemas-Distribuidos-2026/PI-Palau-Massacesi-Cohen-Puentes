@@ -1,6 +1,8 @@
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+batch_timeout = float(os.getenv("BATCH_TIMEOUT_SEC", "20"))
 
 class Settings(BaseSettings):
     """
@@ -15,7 +17,7 @@ class Settings(BaseSettings):
     
     # Ollama Configuration
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:0.5b"
+    ollama_model: str = "llama3.2:1b"
     
     # API Configuration
     api_host: str = "0.0.0.0"
@@ -24,7 +26,7 @@ class Settings(BaseSettings):
     # Application Configuration
     distortion_probability: float = 0.3
     batch_size: int = 5
-    batch_timeout_seconds: int = 3
+    batch_timeout_seconds: float = batch_timeout
     
     # Logging
     log_level: str = "INFO"
@@ -42,13 +44,19 @@ class RabbitMQConfig:
     EXCHANGE_NAME = "telephone"
     EXCHANGE_TYPE = "direct"
     
-    # Queues (single shared queues)
+    # Stream queues
     JOBS_QUEUE = "telephone.jobs"
     RESULTS_QUEUE = "telephone.results"
     
     # Routing keys
     ROUTING_KEY_JOBS = "jobs"
     ROUTING_KEY_RESULTS = "results"
+
+    # Stream settings
+    QUEUE_TYPE_STREAM = "stream"
+    JOBS_STREAM_MAX_AGE = "1h"
+    RESULTS_STREAM_MAX_AGE = "2h"
+    STREAM_CONSUMER_OFFSET = "next"
 
 
 # ============ Job Status Constants ============
@@ -67,21 +75,22 @@ class MessageFormats:
     """
     
     @staticmethod
-    def job_message(job_id: str, phrase: str, worker_id: int) -> dict:
-        """Format for job message to worker."""
+    def job_message(job_id: str, phrase: str, num_workers: int) -> dict:
+        """Format for job message to worker stream consumers."""
         return {
             "job_id": job_id,
             "phrase": phrase,
-            "worker_id": worker_id
+            "num_workers": num_workers
         }
     
     @staticmethod
-    def result_message(job_id: str, worker_id: int, distorted_phrase: str) -> dict:
+    def result_message(job_id: str, worker_id: int, distorted_phrase: str, num_workers: int) -> dict:
         """Format for result message from worker."""
         return {
             "job_id": job_id,
             "worker_id": worker_id,
-            "distorted_phrase": distorted_phrase
+            "distorted_phrase": distorted_phrase,
+            "num_workers": num_workers
         }
     
     @staticmethod
