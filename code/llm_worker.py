@@ -83,17 +83,21 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
             {
                 "role": "system",
                 "content": (
-                    "Eres un corrector ortográfico automatizado. Tu única tarea es corregir los "
-                    "errores de tipeo del texto en español que te proporciona el usuario.\n"
-                    "REGLAS:\n"
-                    "- Devuelve únicamente el texto corregido.\n"
-                    "- Mantén exactamente el mismo número de líneas que recibes.\n"
-                    "- No agregues introducciones, explicaciones, ni viñetas (-)."
+                    "Eres un detective de mensajes. "
+                    "El usuario te dará varias versiones distorsionadas de un mismo mensaje original. "
+                    "Tu tarea es deducir cuál era el mensaje original. "
+                    "REGLAS ESTRICTAS:\n"
+                    "- Responde SOLO con el mensaje original reconstruido.\n"
+                    "- Una única línea, sin explicaciones, sin comillas, sin guiones, sin prefijos."
                 )
             },
             {
                 "role": "user",
-                "content": f"Corrige las siguientes líneas de texto:\n{lineas_entrada}"
+                "content": (
+                    f"Estas {len(phrases)} frases son versiones distorsionadas del mismo mensaje original:\n"
+                    f"{lineas_entrada}\n\n"
+                    "¿Cuál era el mensaje original?"
+                )
             }
         ],
         "stream": False,
