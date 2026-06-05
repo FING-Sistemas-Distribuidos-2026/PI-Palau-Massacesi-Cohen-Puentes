@@ -12,6 +12,7 @@ Uso:
 import argparse
 import random
 import unicodedata
+import re
 
 from rapidfuzz.distance import Levenshtein
 from spellchecker import SpellChecker
@@ -20,7 +21,15 @@ from spellchecker import SpellChecker
 # Vocabulario: diccionario real del español (~60k palabras)
 # ---------------------------------------------------------------------------
 _spell = SpellChecker(language="es")
-VOCABULARY = list(_spell.word_frequency.words())
+
+# Traemos las palabras originales
+raw_words = list(_spell.word_frequency.words())
+
+# Filtro estricto: Solo permitimos letras de la A a la Z, eñes y vocales con tilde.
+# Esto vuela de un plumazo palabras con 'ç', acentos en la 'à' o 'è', etc.
+pattern = re.compile(r"^[a-záéíóúüñ]+$")
+
+VOCABULARY = [w for w in raw_words if pattern.match(w) and len(w) > 1]
 
 # ---------------------------------------------------------------------------
 # Helpers
