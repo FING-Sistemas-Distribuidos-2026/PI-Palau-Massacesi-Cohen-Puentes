@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: telephone-llm-worker-deployment
+  name: telephone-worker-deployment
   namespace: default
   labels:
-    app: telephone-llm-worker
+    app: telephone-worker
 spec:
   replicas: 1 # Puedes subirlo o bajarlo según cuántos pods quieras
   selector:
     matchLabels:
-      app: telephone-llm-worker
+      app: telephone-worker
   template:
     metadata:
       labels:
-        app: telephone-llm-worker
+        app: telephone-worker
     spec:
       containers:
-      - name: telephone-llm-worker
-        image: lutespatella/telephone-llm_worker:v1
+      - name: telephone-worker
+        image: lutespatella/telephone-worker:v1
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

@@ -30,13 +30,13 @@ spec:
         app: ollama
     spec:
       # --- CLAVE PARA TU NODO ESPECIAL ---
-      tolerations:
-      - key: "reservado"
-        operator: "Equal"
-        value: "exclusivo"
-        effect: "NoSchedule"
-      nodeSelector:
-        funcion: app-especial
+      # tolerations:
+      # - key: "reservado"
+      #   operator: "Equal"
+      #   value: "exclusivo"
+      #   effect: "NoSchedule"
+      # nodeSelector:
+      #   funcion: app-especial
       # ------------------------------------
 
       containers:
