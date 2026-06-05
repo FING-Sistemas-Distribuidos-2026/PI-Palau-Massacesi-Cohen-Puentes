@@ -47,14 +47,14 @@ spec:
         - name: DATABASE_USER           # El nombre de la variable que lee tu código (ej: Spring)
           valueFrom:
             secretKeyRef:
-              name: db-credentials     # Nombre de tu objeto Secret
-              key: db-user             # La clave dentro del Secret
+              name: credentials     # Nombre de tu objeto Secret
+              key: POSTGRES_USER            # La clave dentro del Secret
               
         - name: DATABASE_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: db-credentials
-              key: db-password
+              name: credentials
+              key: POSTGRES_PASSWORD
 
 ---
 apiVersion: v1
