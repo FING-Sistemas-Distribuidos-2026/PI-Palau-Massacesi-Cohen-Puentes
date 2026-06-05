@@ -1,1 +1,2 @@
 rapidfuzz==3.14.5
+pyspellchecker==0.7.2

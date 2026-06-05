@@ -227,8 +227,3 @@ Checks funcionales:
 6. Smoke test automatico y rollback si falla.
 
 ---
-
-Si queres, como siguiente paso te puedo armar tambien:
-
-- manifests base (Deployment/Service/ConfigMap/Secret) listos para aplicar, o
-- una estructura Helm chart del proyecto para versionar deploys mas facil.
