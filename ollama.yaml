@@ -73,7 +73,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: ollama-service
+  name: ollama
   namespace: default
 spec:
   type: ClusterIP # Cambia a ClusterIP para que tu API lo consuma internamente usando http://ollama-service:11434
