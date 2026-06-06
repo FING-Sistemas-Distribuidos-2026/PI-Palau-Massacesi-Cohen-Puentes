@@ -1,4 +1,17 @@
 apiVersion: apps/v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-storage
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # Al no especificar storageClassName, tu clúster usará la que tenga por defecto (ej: Cinder de OpenStack)
+
+---
 kind: Deployment
 metadata:
   name: postgres
@@ -27,6 +40,14 @@ spec:
           value: "devpassword123"
         - name: POSTGRES_DB
           value: "telephone_db"
+        volumeMounts:
+        - name: postgres-volume
+          mountPath: /root/.postgres
+
+      volumes:
+      - name: postgres-volume
+        persistentVolumeClaim:
+          claimName: postgres-storage
 ---
 apiVersion: v1
 kind: Service

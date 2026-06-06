@@ -6,7 +6,7 @@ metadata:
   labels:
     app: telephone-api
 spec:
-  replicas: 1 # Puedes subirlo o bajarlo según cuántos pods quieras
+  replicas: 2 # Puedes subirlo o bajarlo según cuántos pods quieras
   selector:
     matchLabels:
       app: telephone-api
@@ -19,7 +19,7 @@ spec:
 
       containers:
       - name: telephone-api
-        image: lutespatella/telephone-api:v1
+        image: lutespatella/telephone-api:v2
         imagePullPolicy: Always
         ports:
         - containerPort: 8080 # Cambia al puerto que use tu API (ej: 8080, 3000)
