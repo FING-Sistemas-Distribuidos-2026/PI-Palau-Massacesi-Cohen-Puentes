@@ -136,15 +136,17 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
             log.error(f"[job={job_id[:8]}] Error Ollama: {e}")
             return "[error]", ""
 # ---------------------------------------------------------------------------
-# Procesamiento de un batch
+# Procesamiento de lotes del LLM (Basado 100% en la Realidad de la DB)
 # ---------------------------------------------------------------------------
-def process_batch(job_id: str, phrases: list[str], batch_num: int, received_at_moment: int, total: int):
+def process_batch(job_id: str, phrases: list[str], batch_num: int):
     log.info(f"[job={job_id[:8]}] Procesando batch={batch_num} | frases_en_batch={len(phrases)}")
 
+    # 1. Llamamos a Ollama con nuestro lote fraccionado (sea del tamaño que sea)
     guess_text, ollama_raw = call_ollama(phrases, job_id, batch_num)
 
     db = SessionLocal()
     try:
+        # 2. Insertamos el veredicto actual de este lote en la tabla Guess
         guess = Guess(
             job_id=job_id,
             batch_num=batch_num,
@@ -152,30 +154,41 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int, received_at_m
             ollama_response=ollama_raw,
         )
         db.add(guess)
-        db.commit()
+        db.commit() # Confirmamos la inserción físicamente
 
-        # Evaluamos el cierre del JOB consultando los totales reales y el número de batch
-        with buffers_lock:
-            buf = job_buffers.get(job_id)
+        # 3. ⚡ DETERMINACIÓN RELACIONAL DEL CIERRE (Sin supuestos de memoria)
+        # Consultamos el registro del Job para saber cuántas copias reales publicó la API.
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job and job.status != "completed":
+            from database import DistortedPhrase
+            total_frases_distorsionadas = db.query(DistortedPhrase).filter(DistortedPhrase.job_id == job_id).count()
             
-            # Condición segura: Si ya recibimos todo lo esperado y estamos procesando el lote final (batch 3)
-            if buf and buf["total"] > 0 and received_at_moment >= buf["total"]:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if job and job.status != "completed":
-                    job.status = "completed"
-                    db.commit()
-                    log.info(f"[job={job_id[:8]}] ¡Todas las réplicas procesadas! Marcado como 'completed'.")
-                    
-                    # Ahora sí borramos el buffer de memoria de forma segura
-                    del job_buffers[job_id]
+            # El flujo se considera completo cuando ingresan todas las copias enviadas al Rabbit.
+            if total_frases_distorsionadas > 0 and total_frases_distorsionadas >= job.num_workers:
+                job.status = "completed"
+                db.commit()
+                log.info(f"[job={job_id[:8]}] 🏁 Cierre relacional certificado: {total_frases_distorsionadas} frases en DB.")
+
+        # 4. 🧹 Limpieza del buffer de ráfaga
+        # Como este lote ya se guardó en Postgres, coordinamos la memoria de forma segura.
+        # Si la API o el conteo físico dicen que ya terminamos, barremos el mapa para liberar RAM.
+        with buffers_lock:
+            # Si el buffer en memoria está completamente vacío (significa que el flusher de timeout 
+            # barrió el remanente y no entraron nuevos mensajes en los últimos segundos):
+            if job_id in job_buffers and not job_buffers[job_id]["phrases"]:
+                del job_buffers[job_id]
+                log.info(f"[job={job_id[:8]}] Memoria volátil purgada por inactividad del flujo.")
 
     except Exception as e:
         db.rollback()
-        log.error(f"[job={job_id[:8]}] Error guardando en DB: {e}")
+        log.error(f"[job={job_id[:8]}] Error en la transacción de la DB: {e}")
     finally:
         db.close()
+# Seteamos un tope seguro para Ollama. Más de 10 frases rotas confunden al modelo de 1B.
+MAX_BATCH_SIZE_OLLAMA = 10 
+
 # ---------------------------------------------------------------------------
-# RabbitMQ: callback por mensaje
+# RabbitMQ: callback por mensaje (Agnóstico y Dinámico)
 # ---------------------------------------------------------------------------
 def on_message(channel, method, properties, body):
     try:
@@ -184,94 +197,73 @@ def on_message(channel, method, properties, body):
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    job_id      = data.get("job_id", "").strip()
-    distorted   = data.get("distorted_phrase", "").strip()
-    num_workers = int(data.get("num_workers", 0))
+    job_id    = data.get("job_id", "").strip()
+    distorted = data.get("distorted_phrase", "").strip()
 
     if not job_id or not distorted:
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    flush_phrases    = None
-    flush_batch_num  = None
-    flush_received   = None
-    flush_total      = None
+    flush_phrases   = None
+    flush_batch_num = None
 
     with buffers_lock:
         buf = job_buffers[job_id]
-        if num_workers > 0:
-            buf["total"] = num_workers
-
-        # 1. Acumulamos SIEMPRE en la lista histórica del buffer
-        # 1. Acumulamos la frase en el buffer histórico
         buf["phrases"].append(distorted)
         buf["received"] += 1
-        
-        # Guardamos cuántas frases tenemos en este instante exacto de la ejecución
-        current_count = buf["received"] 
+        buf["last_ts"] = time.monotonic()
 
-        
-        # 2. Control estricto de disparadores usando porciones disjuntas (Slicing limpio)
-        disparar_batch = False
-        
-        if current_count == 3:
-            buf["batch_num"] = 1
-            flush_phrases = buf["phrases"][0:3]  # Frases 1, 2 y 3
-            disparar_batch = True
-        elif current_count == 6:
-            buf["batch_num"] = 2
-            flush_phrases = buf["phrases"][3:6]  # Frases 4, 5 y 6
-            disparar_batch = True
-        elif current_count == buf["total"] or current_count == 9:
-            buf["batch_num"] = 3
-            flush_phrases = buf["phrases"][6:9]  # Frases 7, 8 y 9 (o hasta el total)
-            disparar_batch = True
-
-        if disparar_batch:
-            # Ya extrajimos la porción exacta arriba, solo congelamos los metadatos
+        # Usamos el BATCH_SIZE configurado (ej: 3) para mantener el flujo ágil en caliente
+        if len(buf["phrases"]) >= BATCH_SIZE or len(buf["phrases"]) >= MAX_BATCH_SIZE_OLLAMA:
+            buf["batch_num"] += 1
+            flush_phrases = buf["phrases"][:]
+            buf["phrases"] = [] # VACIAMOS de verdad para que no crezca a 45
             flush_batch_num = buf["batch_num"]
-            flush_received = current_count
-            flush_total = buf["total"]
 
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
-    # Disparamos el hilo asíncrono para Ollama solo si cumplió la condición de los 3 pasos
+    # Si se llenó un lote óptimo en caliente, se procesa de inmediato
     if flush_phrases:
         threading.Thread(
             target=process_batch,
-            args=(job_id, flush_phrases, flush_batch_num, flush_received, flush_total),
+            args=(job_id, flush_phrases, flush_batch_num),
             daemon=True,
         ).start()
 
+
 # ---------------------------------------------------------------------------
-# Hilo de timeout: flush forzado
+# Hilo de timeout: El encargado de segmentar el remanente por silencio
 # ---------------------------------------------------------------------------
 def timeout_flusher():
     while True:
-        time.sleep(5.0)
+        time.sleep(1.0) # Escaneo rápido de 1 segundo
         now = time.monotonic()
-        to_flush = []
-
+        
         with buffers_lock:
             for job_id, buf in list(job_buffers.items()):
                 if not buf["phrases"]:
                     continue
                 
-                # Si pasaron los segundos de timeout sin recibir nada nuevo, forzamos lo que haya
+                # Si la manguera se quedó en silencio por el tiempo estipulado (ej: 5-10s)
                 if (now - buf["last_ts"]) >= BATCH_TIMEOUT_SEC:
-                    buf["batch_num"] += 1
-                    to_flush.append((
-                        job_id,
-                        buf["phrases"][:],
-                        buf["batch_num"],
-                        buf["received"],
-                        buf["total"],
-                    ))
-                    buf["phrases"] = []
-
-        for args in to_flush:
-            log.info(f"[job={args[0][:8]}] Timeout alcanzado en buffer. Forzando batch {args[2]}.")
-            threading.Thread(target=process_batch, args=args, daemon=True).start()
+                    log.info(f"[job={job_id[:8]}] ⏱️ Silencio detectado. Procesando remanente de {len(buf["phrases"])} frases.")
+                    
+                    # 💡 AQUÍ ESTÁ LA VENTANA PONDERADA REAL:
+                    # En lugar de mandar las 30 frases juntas y romper a Ollama,
+                    # dividimos el remanente en sub-lotes de tamaño seguro (máximo 10)
+                    frases_remanentes = buf["phrases"][:]
+                    buf["phrases"] = [] # Limpiamos el buffer del job
+                    
+                    sub_lotes = [frases_remanentes[i:i + MAX_BATCH_SIZE_OLLAMA] for i in range(0, len(frases_remanentes), MAX_BATCH_SIZE_OLLAMA)]
+                    
+                    # DENTRO DE timeout_flusher():
+                    for lote in sub_lotes:
+                        buf["batch_num"] += 1
+                        threading.Thread(
+                            target=process_batch,
+                            args=(job_id, lote, buf["batch_num"]), # <-- Limpio, exactamente 3 argumentos
+                            daemon=True,
+                        ).start()
 # ---------------------------------------------------------------------------
 # Esperas con retry
 # ---------------------------------------------------------------------------
