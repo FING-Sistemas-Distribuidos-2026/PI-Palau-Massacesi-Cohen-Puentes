@@ -1,4 +1,17 @@
 apiVersion: apps/v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-storage
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Al no especificar storageClassName, tu clúster usará la que tenga por defecto (ej: Cinder de OpenStack)
+
+---
 kind: Deployment
 metadata:
   name: rabbitmq
@@ -25,6 +38,14 @@ spec:
           value: "guest"
         - name: RABBITMQ_DEFAULT_PASS
           value: "guest"
+        volumeMounts:
+        - name: rabbitmq-volume
+          mountPath: /root/.rabbitmq
+
+      volumes:
+      - name: rabbitmq-volume
+        persistentVolumeClaim:
+          claimName: rabbitmq-storage
 ---
 apiVersion: v1
 kind: Service
