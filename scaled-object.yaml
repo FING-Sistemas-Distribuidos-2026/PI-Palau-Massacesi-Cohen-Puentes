@@ -1,0 +1,19 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: telephone-worker-scaler
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: telephone-worker-deployment # <--- Tu deployment v2
+  minReplicaCount: 2   # En paz, solo 2 worker encendido
+  maxReplicaCount: 15  # El tope que le permites automático para no fundir tu CPU
+  triggers:
+  - type: rabbitmq
+    metadata:
+      # Dependiendo de si mides por mensajes listos o longitud del Stream
+      queueName: telephone.results 
+      value: "5" # Cada 5 mensajes acumulados, KEDA mete 1 worker más
+      host: amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672/%2F

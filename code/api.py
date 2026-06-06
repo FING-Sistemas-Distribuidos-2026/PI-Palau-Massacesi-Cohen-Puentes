@@ -168,6 +168,25 @@ def broadcast_sse_event(job_id: str, event_type: str, data: dict):
             logger.warning(f"SSE queue full for job {job_id}")
 
 
+def get_effective_job_progress(db: Session, job_id: str) -> tuple[Job | None, int, int, int]:
+    """Return the job plus normalized and raw distortion counts for display."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        return None, 0, 0, 0
+
+    raw_completed = db.query(DistortedPhrase).filter(
+        DistortedPhrase.job_id == job_id
+    ).count()
+
+    observed_worker_fanout = db.query(DistortedPhrase.worker_id).filter(
+        DistortedPhrase.job_id == job_id
+    ).distinct().count()
+    observed_worker_fanout = max(observed_worker_fanout, 1)
+
+    completed_copies = raw_completed // observed_worker_fanout
+    return job, raw_completed, completed_copies, observed_worker_fanout
+
+
 # ============ API Endpoints ============
 
 @app.get("/health")
@@ -240,45 +259,35 @@ async def send_phrase(
         "created_at": job.created_at.isoformat()
     }
 
-
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str, db: Session = Depends(get_db)):
-    """
-    GET /job/{id}/status
-    Get current job status and progress.
-    
-    Args:
-        job_id: The job ID
-    
-    Returns:
-        Job status, progress percentage, and number of completed workers
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
+    job, raw_completed, completed_copies, observed_worker_fanout = get_effective_job_progress(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail=ResponseMessages.JOB_NOT_FOUND)
-    
-    # Count completed distortions
-    completed_count = db.query(DistortedPhrase).filter(
-        DistortedPhrase.job_id == job_id
-    ).count()
-    
-    progress_percentage = (completed_count / job.num_workers * 100) if job.num_workers > 0 else 0
-    
-    # Update job status if all workers completed
-    if completed_count == job.num_workers and job.status != JobStatus.COMPLETED:
-        job.status = JobStatus.COMPLETED
-        db.commit()
-    
+
+    # El total esperado es el número real registrado en el Job. Sin multiplicaciones.
+    total_esperado = job.num_workers
+
+    progress_percentage = (completed_copies / total_esperado * 100) if total_esperado > 0 else 0
+
+    # Cierre automático basado en la realidad física de la DB
+    if total_esperado > 0 and completed_copies >= total_esperado:
+        progress_percentage = 100.0
+        if job.status != JobStatus.COMPLETED:
+            job.status = JobStatus.COMPLETED
+            db.commit()
+
     return {
         "job_id": job_id,
         "phrase": job.phrase,
-        "num_workers": job.num_workers,
-        "completed_workers": completed_count,
-        "progress_percentage": round(progress_percentage, 2),
+        "num_workers": total_esperado,
+        "completed_workers": completed_copies,
+        "raw_completed_workers": raw_completed,
+        "observed_worker_fanout": observed_worker_fanout,
+        "progress_percentage": min(round(progress_percentage, 2), 100.0),
         "status": job.status,
         "created_at": job.created_at.isoformat()
     }
-
 
 @app.get("/job/{job_id}/stream")
 async def stream_job_events(job_id: str, db: Session = Depends(get_db)):
@@ -328,27 +337,19 @@ async def stream_job_events(job_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/job/{job_id}/distortions")
-async def get_distortions(job_id: str, db: Session = Depends(get_db)):
-    """
-    GET /job/{id}/distortions
-    Get all distorted phrases for a job (no streaming, regular endpoint).
-    
-    Args:
-        job_id: The job ID
-    
-    Returns:
-        List of distorted phrases with worker IDs
-    """
+async def get_job_distortions(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail=ResponseMessages.JOB_NOT_FOUND)
     
+    # 🔓 ELIMINADO EL LIMIT: Traemos todas las distorsiones reales que existan en la DB
     distortions = db.query(DistortedPhrase).filter(
         DistortedPhrase.job_id == job_id
-    ).all()
+    ).order_by(DistortedPhrase.worker_id.asc()).all()
     
     return {
         "job_id": job_id,
+        "phrase": job.phrase,
         "total_distortions": len(distortions),
         "distortions": [
             {
@@ -459,31 +460,28 @@ async def get_guesses(job_id: str, db: Session = Depends(get_db)):
 
 @app.get("/jobs")
 async def list_jobs(db: Session = Depends(get_db)):
-    """
-    GET /jobs
-    List all jobs with summary information.
-    
-    Returns:
-        List of all jobs
-    """
     jobs = db.query(Job).order_by(Job.created_at.desc()).all()
     
     result = []
     for job in jobs:
-        completed_count = db.query(DistortedPhrase).filter(
-            DistortedPhrase.job_id == job.id
-        ).count()
+        _, raw_completed, completed_copies, observed_worker_fanout = get_effective_job_progress(db, job.id)
+        
+        total_esperado = job.num_workers
+        
         effective_status = (
-            JobStatus.COMPLETED if completed_count == job.num_workers else job.status
+            JobStatus.COMPLETED if completed_copies >= total_esperado and total_esperado > 0 else job.status
         )
-        progress = (completed_count / job.num_workers * 100) if job.num_workers > 0 else 0
+        
+        progress_percentage = (completed_copies / total_esperado * 100) if total_esperado > 0 else 0
         
         result.append({
             "job_id": job.id,
-            "phrase": job.phrase[:100],  # Truncate for list view
-            "num_workers": job.num_workers,
-            "completed_workers": completed_count,
-            "progress_percentage": round(progress, 2),
+            "phrase": job.phrase[:100],
+            "num_workers": total_esperado,
+            "completed_workers": completed_copies,
+            "raw_completed_workers": raw_completed,
+            "observed_worker_fanout": observed_worker_fanout,
+            "progress_percentage": min(round(progress_percentage, 2), 100.0),
             "status": effective_status,
             "created_at": job.created_at.isoformat()
         })

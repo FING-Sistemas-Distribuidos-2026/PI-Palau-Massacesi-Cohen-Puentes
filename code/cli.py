@@ -20,8 +20,10 @@ from rich.columns import Columns
 from rich import box
 
 console = Console()
+LAST_SENT_JOB_ID: str | None = None
 
 # API Configuration
+# API_URL = "http://localhost:8000"
 API_URL = "http://api:8000"
 REQUEST_TIMEOUT = 5
 
@@ -160,6 +162,19 @@ def check_api_before_action():
     return True
 
 
+def sort_jobs_by_newest(jobs: list[dict]) -> list[dict]:
+    """Order jobs from newest to oldest using the API timestamp."""
+    return sorted(
+        jobs,
+        key=lambda job: (
+            job.get("job_id") == LAST_SENT_JOB_ID,
+            job.get("created_at", ""),
+            job.get("job_id", ""),
+        ),
+        reverse=True,
+    )
+
+
 def print_menu():
     table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
     table.add_column(style="bold cyan", width=4)
@@ -211,7 +226,9 @@ def send_phrase():
         result = send_phrase_to_api(frase, copias)
 
     if result:
+        global LAST_SENT_JOB_ID
         frase_id = result.get("job_id")
+        LAST_SENT_JOB_ID = frase_id
         console.print(f"  [bold green]✓ Frase enviada[/bold green]  [dim]{frase_id}[/dim]")
     else:
         console.print("  [red]✗ Error al enviar la frase[/red]")
@@ -234,6 +251,8 @@ def list_jobs():
         console.print("  [red]✗ Error al obtener las frases[/red]\n")
         Prompt.ask("  [dim]Enter para continuar[/dim]", default="")
         return
+
+    jobs = sort_jobs_by_newest(jobs)
         
     if not jobs:
         console.print("  [dim]No hay frases aún.[/dim]\n")
@@ -348,6 +367,8 @@ def show_llm_guesses_menu():
         console.print("  [red]✗ Error al obtener las frases[/red]\n")
         Prompt.ask("  [dim]Enter para continuar[/dim]", default="")
         return
+
+    jobs = sort_jobs_by_newest(jobs)
 
     if not jobs:
         console.print("  [dim]No hay frases aún.[/dim]\n")

@@ -57,6 +57,7 @@ class RabbitMQConfig:
     JOBS_STREAM_MAX_AGE = "1h"
     RESULTS_STREAM_MAX_AGE = "2h"
     STREAM_CONSUMER_OFFSET = "next"
+    LLM_STREAM_OFFSET = "first"
 
 
 # ============ Job Status Constants ============
