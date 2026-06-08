@@ -64,7 +64,7 @@ def get_rabbitmq_connection():
 
 
 def setup_worker_queue():
-    """Setup stream queues for jobs and results."""
+    """Setup classic durable queues for jobs and results."""
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
@@ -76,12 +76,10 @@ def setup_worker_queue():
             durable=True
         )
         
-        # Declare jobs stream queue
+        # Declare jobs queue
         channel.queue_declare(
             queue=RabbitMQConfig.JOBS_QUEUE,
             durable=True,
-            arguments={
-            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -89,12 +87,10 @@ def setup_worker_queue():
             routing_key=RabbitMQConfig.ROUTING_KEY_JOBS
         )
         
-        # Declare results stream queue (where workers publish)
+        # Declare results queue
         channel.queue_declare(
             queue=RabbitMQConfig.RESULTS_QUEUE,
             durable=True,
-            arguments={
-            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -159,7 +155,7 @@ def process_message(message: dict) -> dict:
         raise
 
 
-def publish_result(ch, result: dict): # Pasamos el canal 'ch' actual como argumento
+def publish_result(ch, result: dict):
     """Publish result to RabbitMQ results queue using the existing channel."""
     try:
         ch.basic_publish(
@@ -192,7 +188,6 @@ def consume_jobs():
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         
-        # Consume from jobs stream queue
         jobs_queue = RabbitMQConfig.JOBS_QUEUE
         
         # Set prefetch to 1 (process one message at a time)
@@ -206,35 +201,23 @@ def consume_jobs():
                 # Process the message
                 result = process_message(message)
                 
-                # Publicar usando el MISMO canal con el que escuchamos
+                # Publish using the SAME channel we're consuming on
                 publish_result(ch, result) 
                 
                 # Acknowledge
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 logger.info(f"Successfully processed job {message['job_id']}")
                 
-                # 💡 AGREGAR ACÁ: Apagado elegante para ScaledJobs
-                logger.info("Task completed. Stopping consumer loop...")
-                # ch.stop_consuming() # Rompe el bucle inifinito de start_consuming()
-                
             except Exception as e:
                 logger.error(f"Error in callback: {e}")
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         
-        consumer_group_name = "telephone_workers_group"
-
         channel.basic_consume(
             queue=jobs_queue,
             on_message_callback=callback,
-            # Al declarar un name idéntico, RabbitMQ guarda el offset "stored" 
-            # para todo el grupo, compartiendo el progreso entre los Jobs que mueren y nacen.
-            # consumer_tag=consumer_group_name, 
-            # arguments={
-            #     "x-stream-offset":"first"
-            # }
         )
         
-        logger.info(f"Worker {WORKER_ID} listening on jobs stream {jobs_queue}")
+        logger.info(f"Worker {WORKER_ID} listening on queue {jobs_queue}")
         channel.start_consuming()
     
     except KeyboardInterrupt:

@@ -8,6 +8,9 @@ COPY code/requirements-cli.txt requirements-cli.txt
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements-cli.txt
 
+# Instala readline para mejorar la experiencia de CLI
+RUN apt-get update && apt-get install -y libreadline-dev && rm -rf /var/lib/apt/lists/*
+
 # Copy application code
 COPY code/ .
 

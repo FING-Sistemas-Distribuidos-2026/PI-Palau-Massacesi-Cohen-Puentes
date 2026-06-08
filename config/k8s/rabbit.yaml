@@ -2,24 +2,24 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: rabbitmq-storage
-  namespace: default
+  namespace: telephone-distortion
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 1Gi
-  # Al no especificar storageClassName, tu clúster usará la que tenga por defecto (ej: Cinder de OpenStack)
 
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rabbitmq
+  namespace: telephone-distortion
   labels:
     app: rabbitmq
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: rabbitmq
@@ -36,22 +36,29 @@ spec:
           name: amqp
         env:
         - name: RABBITMQ_DEFAULT_USER
-          value: "guest"
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: RABBITMQ_USER
         - name: RABBITMQ_DEFAULT_PASS
-          value: "guest"
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: RABBITMQ_PASS
         volumeMounts:
         - name: rabbitmq-volume
-          mountPath: /root/.rabbitmq
-
+          mountPath: /var/lib/rabbitmq
       volumes:
       - name: rabbitmq-volume
         persistentVolumeClaim:
           claimName: rabbitmq-storage
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: rabbitmq
+  namespace: telephone-distortion
 spec:
   ports:
   - port: 5672

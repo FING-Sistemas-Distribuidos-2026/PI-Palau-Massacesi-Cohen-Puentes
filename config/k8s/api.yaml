@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telephone-api-deployment
+  namespace: telephone-distortion
+  labels:
+    app: telephone-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telephone-api
+  template:
+    metadata:
+      labels:
+        app: telephone-api
+    spec:
+      containers:
+      - name: telephone-api
+        image: juanignaciomassacesi/telephone-api:v1
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+          requests:
+            cpu: "500m"
+            memory: "500Mi"
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: DATABASE_URL
+        - name: RABBITMQ_URL
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: RABBITMQ_URL
+        - name: OLLAMA_URL
+          value: http://ollama.telephone-distortion.svc.cluster.local:11434
+        - name: OLLAMA_MODEL
+          value: llama3.2:1b
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_DB
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telephone-api-service
+  namespace: telephone-distortion
+spec:
+  type: LoadBalancer
+  selector:
+    app: telephone-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000

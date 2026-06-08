@@ -2,18 +2,17 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-storage
-  namespace: default
+  namespace: telephone-distortion
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 5Gi
-  # Al no especificar storageClassName, tu clúster usará la que tenga por defecto (ej: Cinder de OpenStack)
 
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
   labels:
@@ -36,24 +35,34 @@ spec:
           name: postgres
         env:
         - name: POSTGRES_USER
-          value: "user"
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
-          value: "devpassword123"
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_PASSWORD
         - name: POSTGRES_DB
-          value: "telephone_db"
+          valueFrom:
+            secretKeyRef:
+              name: credentials
+              key: POSTGRES_DB
         volumeMounts:
         - name: postgres-volume
-          mountPath: /root/.postgres
-
+          mountPath: /var/lib/postgresql/data  # ruta estándar de Postgres
       volumes:
       - name: postgres-volume
         persistentVolumeClaim:
           claimName: postgres-storage
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres # <--- Este nombre exacto activará el DNS interno "postgres"
+  name: postgres
+  namespace: telephone-distortion
 spec:
   ports:
   - port: 5432

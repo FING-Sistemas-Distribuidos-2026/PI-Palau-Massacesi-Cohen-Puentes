@@ -44,20 +44,13 @@ class RabbitMQConfig:
     EXCHANGE_NAME = "telephone"
     EXCHANGE_TYPE = "direct"
     
-    # Stream queues
+    # Classic durable queues
     JOBS_QUEUE = "telephone.jobs"
     RESULTS_QUEUE = "telephone.results"
     
     # Routing keys
     ROUTING_KEY_JOBS = "jobs"
     ROUTING_KEY_RESULTS = "results"
-
-    # Stream settings
-    QUEUE_TYPE_STREAM = "classic"
-    JOBS_STREAM_MAX_AGE = "1h"
-    RESULTS_STREAM_MAX_AGE = "2h"
-    STREAM_CONSUMER_OFFSET = "stored"
-    LLM_STREAM_OFFSET = "first"
 
 
 # ============ Job Status Constants ============
@@ -77,7 +70,7 @@ class MessageFormats:
     
     @staticmethod
     def job_message(job_id: str, phrase: str, num_workers: int) -> dict:
-        """Format for job message to worker stream consumers."""
+        """Format for job message published to workers queue."""
         return {
             "job_id": job_id,
             "phrase": phrase,

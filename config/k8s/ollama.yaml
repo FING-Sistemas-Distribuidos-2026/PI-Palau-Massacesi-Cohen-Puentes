@@ -1,20 +1,92 @@
-ollama:
-  gpu:
-    enabled: false
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-storage
+  namespace: telephone-distortion
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # Al no especificar storageClassName, tu clúster usará la que tenga por defecto (ej: Cinder de OpenStack)
 
-  models:
-    pull:
-      - llama3.2:1b
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-deployment
+  namespace: telephone-distortion
+  labels:
+    app: ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # --- CLAVE PARA TU NODO ESPECIAL ---
+      # tolerations:
+      # - key: "reservado"
+      #   operator: "Equal"
+      #   value: "exclusivo"
+      #   effect: "NoSchedule"
+      # nodeSelector:
+      #   funcion: app-especial
+      # ------------------------------------
 
-persistentVolume:
-  enabled: true
-  size: 5Gi
-  # Al no especificar storageClass, Kubernetes usará Cinder por defecto
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest
+        ports:
+        - containerPort: 11434
+          name: api
+        env:
+        - name: OLLAMA_MODELS
+          value: "llama3.2:1b"
+        
+        # Como pusiste 'gpu: enabled: false', correrá puramente en CPU.
+        # No le pasamos recursos de GPU, así que Ollama usará los hilos de la CPU por defecto.
+        #resources:
+        #  limits:
+        #    cpu: "4"
+        #    memory: "3Gi"
+        #  requests:
+        #    cpu: "2"
+        #    memory: "2Gi"
+        
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "3Gi"
 
-resources:
-  limits:
-    cpu: "2"
-    memory: 1Gi
-  requests:
-    cpu: "1"
-    memory: 512Mi
+        # Montamos el volumen persistente en la ruta donde Ollama guarda los modelos
+        volumeMounts:
+        - name: ollama-volume
+          mountPath: /root/.ollama
+
+      volumes:
+      - name: ollama-volume
+        persistentVolumeClaim:
+          claimName: ollama-storage
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: telephone-distortion
+spec:
+  type: ClusterIP # Cambia a ClusterIP para que tu API lo consuma internamente usando http://ollama-service:11434
+  ports:
+    - port: 11434
+      targetPort: 11434
+  selector:
+    app: ollama

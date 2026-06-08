@@ -18,13 +18,14 @@ from rich.live import Live
 from rich.spinner import Spinner
 from rich.columns import Columns
 from rich import box
+import readline  # activa edición de línea en input()
 
 console = Console()
 LAST_SENT_JOB_ID: str | None = None
 
 # API Configuration
-API_URL = "http://localhost:8000"
-# API_URL = "http://api:8000"
+API_URL = "http://localhost:1234"
+#API_URL = "http://telephone_api:8000"
 REQUEST_TIMEOUT = 5
 
 # Error messages
@@ -66,7 +67,7 @@ def get_job_status(job_id: str) -> dict | None:
     """Get job status from API"""
     try:
         resp = requests.get(
-            f"{API_URL}/job/{job_id}/status",
+            f"{API_URL}/job/{job_id}",
             timeout=REQUEST_TIMEOUT
         )
         if resp.status_code == 200:
@@ -200,8 +201,8 @@ def send_phrase():
         console.print("  [red]✗ La frase no puede estar vacía.[/red]\n")
         return
 
-    copias = IntPrompt.ask("[bold]  Cantidad de copias[/bold]", default=3)
-    if copias < 1 or copias > 2000:
+    copias = IntPrompt.ask("[bold]  Cantidad de copias[/bold]")
+    if copias < 1 or copias > 5000:
         console.print("  [red]✗ La cantidad de copias debe estar entre 1 y 2000.[/red]\n")
         return
 
@@ -275,9 +276,10 @@ def list_jobs():
         num_workers = job["num_workers"]
         status = job["status"]
         
-        completed = job.get("completed_workers", 0)
-        bar = "█" * completed + "░" * (num_workers - completed)
-        
+        completed = job.get("raw_completed_workers", job.get("completed_workers", 0))
+        bar_filled = min(completed, num_workers)
+        bar = "█" * bar_filled + "░" * (num_workers - bar_filled)
+
         estado = "[green]✓ lista[/green]" if status == "completed" else "[yellow]⟳ en proceso[/yellow]"
         accion = "[bold green][ver][/bold green]" if status == "completed" else "[dim]—[/dim]"
 
@@ -423,15 +425,52 @@ def show_llm_guesses_menu():
 def job_detail():
     if not check_api_before_action():
         return
-        
+
     console.print(Panel("[bold cyan]DETALLE DE FRASE[/bold cyan]", border_style="cyan", padding=(0, 2)))
     console.print()
 
-    job_id = Prompt.ask("  [bold]ID de la frase[/bold]")
-    if not job_id.strip():
-        console.print("  [red]✗ ID no puede estar vacío[/red]\n")
+    # Mostrar lista seleccionable de jobs
+    with console.status("[cyan]Obteniendo frases...[/cyan]", spinner="dots"):
+        jobs = get_all_jobs()
+
+    if not jobs:
+        console.print("  [dim]No hay frases aún.[/dim]\n")
         Prompt.ask("  [dim]Enter para continuar[/dim]", default="")
         return
+
+    jobs = sort_jobs_by_newest(jobs)
+
+    sel_table = Table(box=box.ROUNDED, border_style="dim", padding=(0, 1))
+    sel_table.add_column("#", style="dim", width=4)
+    sel_table.add_column("ID", style="cyan", no_wrap=True, width=36)
+    sel_table.add_column("Frase original", style="white", max_width=40)
+    sel_table.add_column("Estado", justify="center")
+
+    for index, job in enumerate(jobs, start=1):
+        status = job["status"]
+        estado = "[green]✓ lista[/green]" if status == "completed" else "[yellow]⟳ en proceso[/yellow]"
+        phrase = job["phrase"]
+        sel_table.add_row(
+            str(index),
+            job["job_id"],
+            f'"{phrase[:38]}{"…" if len(phrase) > 38 else ""}"',
+            estado,
+        )
+
+    console.print(sel_table)
+    console.print("  [dim]Escribe el número de una frase para ver su detalle, o Enter para volver.[/dim]")
+    console.print()
+
+    selection = Prompt.ask("  [bold cyan]>[/bold cyan]", default="")
+    if not selection.strip():
+        return
+
+    if not selection.isdigit() or not (1 <= int(selection) <= len(jobs)):
+        console.print("  [red]✗ Número fuera de rango.[/red]\n")
+        Prompt.ask("  [dim]Enter para continuar[/dim]", default="")
+        return
+
+    job_id = jobs[int(selection) - 1]["job_id"]
 
     with console.status("[cyan]Obteniendo detalles...[/cyan]", spinner="dots"):
         status_data = get_job_status(job_id)
@@ -449,9 +488,10 @@ def job_detail():
     table.add_column(style="dim", width=18)
     table.add_column(style="white")
 
-    completed = status_data.get("completed_workers", 0)
+    completed = status_data.get("raw_completed_workers", status_data.get("completed_workers", 0))
     total = status_data.get("num_workers", 0)
-    bar = "█" * completed + "░" * (total - completed) if total > 0 else "—"
+    bar_filled = min(completed, total)
+    bar = "█" * bar_filled + "░" * (total - bar_filled) if total > 0 else "—"
     estado_str = "[green]✓ lista[/green]" if status_data["status"] == "completed" else "[yellow]⟳ en proceso[/yellow]"
 
     table.add_row("[bold]frase id[/bold]", job_id)

@@ -46,7 +46,6 @@ def get_rabbitmq_connection():
     try:
         # Parse RABBITMQ_URL: amqp://user:pass@host:port//
         url = settings.rabbitmq_url
-        # Extract credentials and host from URL
         from urllib.parse import urlparse
         parsed = urlparse(url)
         
@@ -67,7 +66,7 @@ def get_rabbitmq_connection():
 
 
 def setup_rabbitmq():
-    """Setup RabbitMQ exchange and stream queues."""
+    """Setup RabbitMQ exchange and classic durable queues."""
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
@@ -79,12 +78,10 @@ def setup_rabbitmq():
             durable=True
         )
         
-        # Declare jobs stream queue
+        # Declare jobs queue
         channel.queue_declare(
             queue=RabbitMQConfig.JOBS_QUEUE,
             durable=True,
-            arguments={
-            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -92,12 +89,10 @@ def setup_rabbitmq():
             routing_key=RabbitMQConfig.ROUTING_KEY_JOBS
         )
         
-        # Declare results stream queue
+        # Declare results queue
         channel.queue_declare(
             queue=RabbitMQConfig.RESULTS_QUEUE,
             durable=True,
-            arguments={
-            },
         )
         channel.queue_bind(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
@@ -113,20 +108,20 @@ def setup_rabbitmq():
 
 def publish_job_to_workers(job_id: str, phrase: str, num_workers: int):
     """
-    Publica N mensajes individuales al stream. 
-    Cualquier worker libre irá tomando las réplicas secuencialmente.
+    Publica N mensajes individuales a la cola de jobs.
+    Cualquier worker libre irá tomando las tareas secuencialmente.
     """
     try:
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         
-        # Enviamos N copias individuales al Stream
+        # Enviamos N copias individuales a la cola
         for replica_id in range(1, num_workers + 1):
             message = {
                 "job_id": job_id,
                 "phrase": phrase,
                 "num_workers": num_workers,
-                "replica_id": replica_id  # <--- Esto identifica qué copia está procesando
+                "replica_id": replica_id
             }
             
             channel.basic_publish(
@@ -136,7 +131,7 @@ def publish_job_to_workers(job_id: str, phrase: str, num_workers: int):
                 properties=pika.BasicProperties(delivery_mode=2),
             )
             
-        logger.info(f"Published {num_workers} task replicas for job {job_id} to stream")
+        logger.info(f"Published {num_workers} tasks for job {job_id} to queue")
         connection.close()
     except Exception as e:
         logger.error(f"Failed to publish job to workers: {e}")
@@ -234,34 +229,29 @@ async def send_phrase(
     db.add(job)
     db.commit()
     
-    # Publish to RabbitMQ in background
+    # Publish to RabbitMQ
     try:
         publish_job_to_workers(job_id, phrase, num_workers)
     except Exception as e:
+        logger.error(f"Failed to publish job {job_id}: {e}")
         job.status = JobStatus.FAILED
         db.commit()
-        raise HTTPException(status_code=500, detail="Failed to publish job to workers")
-    
-    # Initialize SSE subscriptions for this job
-    sse_subscriptions[job_id] = []
-    
-    logger.info(f"Created job {job_id} with {num_workers} workers")
+        raise HTTPException(status_code=500, detail=ResponseMessages.INTERNAL_ERROR)
     
     return {
         "job_id": job_id,
         "phrase": phrase,
         "num_workers": num_workers,
-        "status": JobStatus.PROCESSING,
-        "created_at": job.created_at.isoformat()
+        "status": JobStatus.PROCESSING
     }
 
-@app.get("/job/{job_id}/status")
-async def get_job_status(job_id: str, db: Session = Depends(get_db)):
+
+@app.get("/job/{job_id}")
+async def get_job(job_id: str, db: Session = Depends(get_db)):
     job, raw_completed, completed_copies, observed_worker_fanout = get_effective_job_progress(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail=ResponseMessages.JOB_NOT_FOUND)
 
-    # El total esperado es el número real registrado en el Job. Sin multiplicaciones.
     total_esperado = job.num_workers
 
     progress_percentage = (completed_copies / total_esperado * 100) if total_esperado > 0 else 0
@@ -338,7 +328,6 @@ async def get_job_distortions(job_id: str, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail=ResponseMessages.JOB_NOT_FOUND)
     
-    # 🔓 ELIMINADO EL LIMIT: Traemos todas las distorsiones reales que existan en la DB
     distortions = db.query(DistortedPhrase).filter(
         DistortedPhrase.job_id == job_id
     ).order_by(DistortedPhrase.worker_id.asc()).all()

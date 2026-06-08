@@ -29,12 +29,10 @@ OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "llama3.2:1b")
 LOG_LEVEL           = os.getenv("LOG_LEVEL",           "INFO")
 BATCH_SIZE          = int(os.getenv("LLM_BATCH_SIZE",    "3"))
 BATCH_TIMEOUT_SEC   = float(os.getenv("LLM_BATCH_TIMEOUT", "20"))
-STREAM_OFFSET       = os.getenv("LLM_STREAM_OFFSET", "next")
 
-QUEUE_NAME    = "telephone.results"
-EXCHANGE_NAME = "telephone"
+QUEUE_NAME          = "telephone.results"
+EXCHANGE_NAME       = "telephone"
 ROUTING_KEY_RESULTS = "results"
-RESULTS_STREAM_MAX_AGE = os.getenv("RESULTS_STREAM_MAX_AGE", "2h")
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -63,10 +61,10 @@ job_buffers: dict = defaultdict(lambda: {
     "received":  0,
     "last_ts":   time.monotonic(),
     "batch_num": 0,
-    "is_processing": False, # Nuevo: Evita que el flusher duplique tareas activas
+    "is_processing": False, # Evita que el flusher duplique tareas activas
 })
 buffers_lock = threading.Lock()
-ollama_global_lock = threading.Lock() # Nuevo: Fuerza a Ollama a procesar de a UN lote a la vez
+ollama_global_lock = threading.Lock() # Fuerza a Ollama a procesar de a UN lote a la vez
 
 # ---------------------------------------------------------------------------
 # Ollama
@@ -135,6 +133,7 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
         except Exception as e:
             log.error(f"[job={job_id[:8]}] Error Ollama: {e}")
             return "[error]", ""
+
 # ---------------------------------------------------------------------------
 # Procesamiento de lotes del LLM (Basado 100% en la Realidad de la DB)
 # ---------------------------------------------------------------------------
@@ -154,9 +153,9 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int):
             ollama_response=ollama_raw,
         )
         db.add(guess)
-        db.commit() # Confirmamos la inserción físicamente
+        db.commit()
 
-        # 3. ⚡ DETERMINACIÓN RELACIONAL DEL CIERRE (Sin supuestos de memoria)
+        # 3. DETERMINACIÓN RELACIONAL DEL CIERRE (Sin supuestos de memoria)
         # Consultamos el registro del Job para saber cuántas copias reales publicó la API.
         job = db.query(Job).filter(Job.id == job_id).first()
         if job and job.status != "completed":
@@ -169,12 +168,8 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int):
                 db.commit()
                 log.info(f"[job={job_id[:8]}] 🏁 Cierre relacional certificado: {total_frases_distorsionadas} frases en DB.")
 
-        # 4. 🧹 Limpieza del buffer de ráfaga
-        # Como este lote ya se guardó en Postgres, coordinamos la memoria de forma segura.
-        # Si la API o el conteo físico dicen que ya terminamos, barremos el mapa para liberar RAM.
+        # 4. Limpieza del buffer de ráfaga
         with buffers_lock:
-            # Si el buffer en memoria está completamente vacío (significa que el flusher de timeout 
-            # barrió el remanente y no entraron nuevos mensajes en los últimos segundos):
             if job_id in job_buffers and not job_buffers[job_id]["phrases"]:
                 del job_buffers[job_id]
                 log.info(f"[job={job_id[:8]}] Memoria volátil purgada por inactividad del flujo.")
@@ -184,11 +179,12 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int):
         log.error(f"[job={job_id[:8]}] Error en la transacción de la DB: {e}")
     finally:
         db.close()
-# Seteamos un tope seguro para Ollama. Más de 10 frases rotas confunden al modelo de 1B.
+
+# Tope seguro para Ollama. Más de 10 frases rotas confunden al modelo de 1B.
 MAX_BATCH_SIZE_OLLAMA = 10 
 
 # ---------------------------------------------------------------------------
-# RabbitMQ: callback por mensaje (Agnóstico y Dinámico)
+# RabbitMQ: callback por mensaje
 # ---------------------------------------------------------------------------
 def on_message(channel, method, properties, body):
     try:
@@ -213,11 +209,10 @@ def on_message(channel, method, properties, body):
         buf["received"] += 1
         buf["last_ts"] = time.monotonic()
 
-        # Usamos el BATCH_SIZE configurado (ej: 3) para mantener el flujo ágil en caliente
         if len(buf["phrases"]) >= BATCH_SIZE or len(buf["phrases"]) >= MAX_BATCH_SIZE_OLLAMA:
             buf["batch_num"] += 1
             flush_phrases = buf["phrases"][:]
-            buf["phrases"] = [] # VACIAMOS de verdad para que no crezca a 45
+            buf["phrases"] = []
             flush_batch_num = buf["batch_num"]
 
     channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -236,7 +231,7 @@ def on_message(channel, method, properties, body):
 # ---------------------------------------------------------------------------
 def timeout_flusher():
     while True:
-        time.sleep(1.0) # Escaneo rápido de 1 segundo
+        time.sleep(1.0)
         now = time.monotonic()
         
         with buffers_lock:
@@ -244,26 +239,23 @@ def timeout_flusher():
                 if not buf["phrases"]:
                     continue
                 
-                # Si la manguera se quedó en silencio por el tiempo estipulado (ej: 5-10s)
+                # Si la manguera se quedó en silencio por el tiempo estipulado
                 if (now - buf["last_ts"]) >= BATCH_TIMEOUT_SEC:
-                    log.info(f"[job={job_id[:8]}] ⏱️ Silencio detectado. Procesando remanente de {len(buf["phrases"])} frases.")
+                    log.info(f"[job={job_id[:8]}] ⏱️ Silencio detectado. Procesando remanente de {len(buf['phrases'])} frases.")
                     
-                    # 💡 AQUÍ ESTÁ LA VENTANA PONDERADA REAL:
-                    # En lugar de mandar las 30 frases juntas y romper a Ollama,
-                    # dividimos el remanente en sub-lotes de tamaño seguro (máximo 10)
                     frases_remanentes = buf["phrases"][:]
-                    buf["phrases"] = [] # Limpiamos el buffer del job
+                    buf["phrases"] = []
                     
                     sub_lotes = [frases_remanentes[i:i + MAX_BATCH_SIZE_OLLAMA] for i in range(0, len(frases_remanentes), MAX_BATCH_SIZE_OLLAMA)]
                     
-                    # DENTRO DE timeout_flusher():
                     for lote in sub_lotes:
                         buf["batch_num"] += 1
                         threading.Thread(
                             target=process_batch,
-                            args=(job_id, lote, buf["batch_num"]), # <-- Limpio, exactamente 3 argumentos
+                            args=(job_id, lote, buf["batch_num"]),
                             daemon=True,
                         ).start()
+
 # ---------------------------------------------------------------------------
 # Esperas con retry
 # ---------------------------------------------------------------------------
@@ -356,10 +348,6 @@ def main():
             channel.queue_declare(
                 queue=QUEUE_NAME,
                 durable=True,
-                arguments={
-                    "x-queue-type": "stream",
-                    "x-max-age": RESULTS_STREAM_MAX_AGE,
-                },
             )
             channel.queue_bind(
                 queue=QUEUE_NAME,
@@ -372,10 +360,9 @@ def main():
                 queue=QUEUE_NAME,
                 on_message_callback=on_message,
                 auto_ack=False,
-                arguments={"x-stream-offset": STREAM_OFFSET},
             )
 
-            log.info(f"Consumiendo stream '{QUEUE_NAME}' (offset={STREAM_OFFSET}) ...")
+            log.info(f"Consumiendo cola '{QUEUE_NAME}' ...")
             channel.start_consuming()
 
         except KeyboardInterrupt:
