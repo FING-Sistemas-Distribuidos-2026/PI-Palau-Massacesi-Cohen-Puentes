@@ -81,8 +81,6 @@ def setup_worker_queue():
             queue=RabbitMQConfig.JOBS_QUEUE,
             durable=True,
             arguments={
-                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
-                "x-max-age": RabbitMQConfig.JOBS_STREAM_MAX_AGE,
             },
         )
         channel.queue_bind(
@@ -96,8 +94,6 @@ def setup_worker_queue():
             queue=RabbitMQConfig.RESULTS_QUEUE,
             durable=True,
             arguments={
-                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
-                "x-max-age": RabbitMQConfig.RESULTS_STREAM_MAX_AGE,
             },
         )
         channel.queue_bind(
@@ -163,26 +159,16 @@ def process_message(message: dict) -> dict:
         raise
 
 
-def publish_result(result: dict):
-    """
-    Publish result to RabbitMQ results queue.
-    
-    Args:
-        result: {job_id, worker_id, distorted_phrase}
-    """
+def publish_result(ch, result: dict): # Pasamos el canal 'ch' actual como argumento
+    """Publish result to RabbitMQ results queue using the existing channel."""
     try:
-        connection = get_rabbitmq_connection()
-        channel = connection.channel()
-        
-        # Publish result
-        channel.basic_publish(
+        ch.basic_publish(
             exchange=RabbitMQConfig.EXCHANGE_NAME,
             routing_key=RabbitMQConfig.ROUTING_KEY_RESULTS,
             body=json.dumps(result),
             properties=pika.BasicProperties(delivery_mode=2)  # Persistent
         )
         logger.info(f"Published result for job {result['job_id']} from worker {result['worker_id']}")
-        connection.close()
     except Exception as e:
         logger.error(f"Failed to publish result: {e}")
         raise
@@ -213,7 +199,6 @@ def consume_jobs():
         channel.basic_qos(prefetch_count=1)
         
         def callback(ch, method, properties, body):
-            """Process a single message."""
             try:
                 message = json.loads(body)
                 logger.info(f"Received message for job {message['job_id']}")
@@ -221,26 +206,35 @@ def consume_jobs():
                 # Process the message
                 result = process_message(message)
                 
-                # Publish result
-                publish_result(result)
+                # Publicar usando el MISMO canal con el que escuchamos
+                publish_result(ch, result) 
                 
-                # Acknowledge message
+                # Acknowledge
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 logger.info(f"Successfully processed job {message['job_id']}")
                 
+                # 💡 AGREGAR ACÁ: Apagado elegante para ScaledJobs
+                logger.info("Task completed. Stopping consumer loop...")
+                # ch.stop_consuming() # Rompe el bucle inifinito de start_consuming()
+                
             except Exception as e:
                 logger.error(f"Error in callback: {e}")
-                # Reject and requeue
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         
-        # Stream offset=next avoids replaying old retained messages on new consumers.
+        consumer_group_name = "telephone_workers_group"
+
         channel.basic_consume(
             queue=jobs_queue,
             on_message_callback=callback,
-            arguments={"x-stream-offset": RabbitMQConfig.STREAM_CONSUMER_OFFSET},
+            # Al declarar un name idéntico, RabbitMQ guarda el offset "stored" 
+            # para todo el grupo, compartiendo el progreso entre los Jobs que mueren y nacen.
+            # consumer_tag=consumer_group_name, 
+            # arguments={
+            #     "x-stream-offset":"first"
+            # }
         )
         
-        logger.info(f"Worker {WORKER_ID} listening on jobs stream {jobs_queue} (offset={RabbitMQConfig.STREAM_CONSUMER_OFFSET})")
+        logger.info(f"Worker {WORKER_ID} listening on jobs stream {jobs_queue}")
         channel.start_consuming()
     
     except KeyboardInterrupt:

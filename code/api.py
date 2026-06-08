@@ -84,8 +84,6 @@ def setup_rabbitmq():
             queue=RabbitMQConfig.JOBS_QUEUE,
             durable=True,
             arguments={
-                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
-                "x-max-age": RabbitMQConfig.JOBS_STREAM_MAX_AGE,
             },
         )
         channel.queue_bind(
@@ -99,8 +97,6 @@ def setup_rabbitmq():
             queue=RabbitMQConfig.RESULTS_QUEUE,
             durable=True,
             arguments={
-                "x-queue-type": RabbitMQConfig.QUEUE_TYPE_STREAM,
-                "x-max-age": RabbitMQConfig.RESULTS_STREAM_MAX_AGE,
             },
         )
         channel.queue_bind(

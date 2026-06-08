@@ -23,8 +23,8 @@ console = Console()
 LAST_SENT_JOB_ID: str | None = None
 
 # API Configuration
-# API_URL = "http://localhost:8000"
-API_URL = "http://api:8000"
+API_URL = "http://localhost:8000"
+# API_URL = "http://api:8000"
 REQUEST_TIMEOUT = 5
 
 # Error messages

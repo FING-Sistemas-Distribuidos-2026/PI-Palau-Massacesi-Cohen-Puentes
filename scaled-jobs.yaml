@@ -1,0 +1,62 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: telephone-worker-scaler-job
+  namespace: default
+spec:
+  maxReplicaCount: 10
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  
+  scalingStrategy:
+    strategy: "eager" # Escala de forma agresiva apenas ve volumen
+
+  jobTargetRef:
+    parallelism: 5
+    completions: 5
+    activeDeadlineSeconds: 600 # 10 minutos máximo de vida por Job si se congela
+    template:
+      metadata:
+        labels:
+          app: telephone-worker-job # Etiqueta requerida para el Pod
+      spec:
+        containers:
+        - name: telephone-worker-job
+          image: lutespatella/telephone-worker:v3 # Tu imagen real
+          imagePullPolicy: Always
+          envFrom:
+          - secretRef:
+              name: credentials # Mapea todas las variables de BD y colas automáticas
+          # Metemos las variables sueltas fijas de tu entorno anterior
+          env:
+          - name: DATABASE_URL
+            value: postgresql://user:devpassword123@postgres:5432/telephone_db
+          - name: RABBITMQ_URL
+            value: amqp://guest:guest@rabbitmq:5672/%2F
+          - name: OLLAMA_URL
+            value: http://ollama:11434
+          - name: OLLAMA_MODEL
+            value: llama3.2:1b
+        restartPolicy: Never # 👈 ARREGLADO: Ahora está al nivel de la especificación del Pod
+
+  triggers:
+  - type: rabbitmq
+    metadata:
+      protocol: amqp
+      queueName: telephone.jobs 
+      mode: QueueLength
+      value: "50" 
+    authenticationRef:
+      name: rabbitmq-job-auth
+
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-job-auth
+  namespace: default
+spec:
+  secretTargetRef:
+  - parameter: host 
+    name: rabbitmq-keda-secret
+    key: host

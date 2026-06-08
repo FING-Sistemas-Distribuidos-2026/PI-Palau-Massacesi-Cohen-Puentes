@@ -53,10 +53,10 @@ class RabbitMQConfig:
     ROUTING_KEY_RESULTS = "results"
 
     # Stream settings
-    QUEUE_TYPE_STREAM = "stream"
+    QUEUE_TYPE_STREAM = "classic"
     JOBS_STREAM_MAX_AGE = "1h"
     RESULTS_STREAM_MAX_AGE = "2h"
-    STREAM_CONSUMER_OFFSET = "next"
+    STREAM_CONSUMER_OFFSET = "stored"
     LLM_STREAM_OFFSET = "first"
 
 
