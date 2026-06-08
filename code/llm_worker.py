@@ -85,7 +85,7 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
                     "El usuario te dará varias versiones distorsionadas de un mismo mensaje original. "
                     "Tu tarea es deducir cuál era el mensaje original. "
                     "REGLAS ESTRICTAS:\n"
-                    "- Responde SOLO con el mensaje original reconstruido sin introducciones"
+                    "- Responde SOLO con el mensaje original reconstruido sin introducciones, viñetas ni contenido extra"
                 )
             },
             {
@@ -93,7 +93,7 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
                 "content": (
                     f"Estas {len(phrases)} frases son versiones distorsionadas del mismo mensaje original:\n"
                     f"{lineas_entrada}\n\n"
-                    "¿Cuál era el mensaje original?"
+                    "¿Cuál era el mensaje original? Contesta únicamente con el mensaje"
                 )
             }
         ],

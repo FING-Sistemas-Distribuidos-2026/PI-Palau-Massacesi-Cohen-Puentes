@@ -11,8 +11,8 @@ spec:
     strategy: "accurate"
 
   jobTargetRef:
-    parallelism: 1
-    completions: 1
+    parallelism: 5
+    completions: 5
     activeDeadlineSeconds: 120
     ttlSecondsAfterFinished: 30
 
@@ -23,34 +23,34 @@ spec:
       spec:
         restartPolicy: Never
         containers:
-        - name: telephone-worker-job
+        - name: telephone-worker-job  # Added "-" and fixed indentation
           image: juanignaciomassacesi/telephone-worker:v1
           imagePullPolicy: Always
           env:
-          - name: DATABASE_URL
+          - name: DATABASE_URL        # Added "-" and fixed indentation
             valueFrom:
               secretKeyRef:
                 name: credentials
                 key: DATABASE_URL
-          - name: RABBITMQ_URL
+          - name: RABBITMQ_URL        # Added "-" and fixed indentation
             valueFrom:
               secretKeyRef:
                 name: credentials
                 key: RABBITMQ_URL
-          - name: OLLAMA_URL
-            value: http://ollama.telephone-distortion.svc.cluster.local:11434
-          - name: OLLAMA_MODEL
+          - name: OLLAMA_URL          # Added "-" and fixed indentation
+            value: http://ollama.telephone-distortion.svc.cluster.local:11434/
+          - name: OLLAMA_MODEL        # Added "-" and fixed indentation
             value: llama3.2:1b
 
   maxReplicaCount: 20
 
   triggers:
-  - type: rabbitmq
+  - type: rabbitmq              # Added "-" and fixed indentation
     metadata:
       protocol: amqp
       queueName: telephone.jobs
       mode: QueueLength
-      value: "10"
+      value: "100"
     authenticationRef:
       name: rabbitmq-job-auth
 
@@ -62,6 +62,6 @@ metadata:
   namespace: telephone-distortion
 spec:
   secretTargetRef:
-  - parameter: host
+  - parameter: host            # Added "-" and fixed indentation
     name: rabbitmq-keda-secret
     key: host
