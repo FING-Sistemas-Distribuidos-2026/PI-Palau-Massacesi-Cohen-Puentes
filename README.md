@@ -9,7 +9,7 @@ Proyecto integrador de sistema distribuido para "telefono ruidoso":
 
 ## Diagrama
 
-![Diagrama del proyecto](diagrama.jpeg)
+![Diagrama del proyecto](SD-Proyecto_diagrama.png)
 
 ## Objetivo
 
@@ -35,7 +35,7 @@ Rutas de mensajes:
 
 ## Estructura del repositorio
 
-1. [code/api.py](code/api.py): API HTTP/SSE.
+1. [code/api.py](code/api.py): API HTTP.
 2. [code/worker.py](code/worker.py): worker de distorsion.
 3. [code/llm_worker.py](code/llm_worker.py): worker de reconstruccion con Ollama.
 4. [code/cli.py](code/cli.py): cliente de consola.
@@ -52,9 +52,7 @@ Endpoints actualmente expuestos:
 3. `GET /job/{job_id}`
 4. `GET /job/{job_id}/distortions`
 5. `GET /job/{job_id}/guesses`
-6. `GET /job/{job_id}/stream` (SSE de eventos)
-7. `GET /job/{job_id}/stream-guesses` (SSE de guesses)
-8. `GET /jobs`
+6. `GET /jobs`
 
 ## Flujo completo (end-to-end)
 
