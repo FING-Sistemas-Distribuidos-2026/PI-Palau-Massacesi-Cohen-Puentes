@@ -188,11 +188,16 @@ def consume_jobs():
         connection = get_rabbitmq_connection()
         channel = connection.channel()
         
+        # Consume from jobs queue
         jobs_queue = RabbitMQConfig.JOBS_QUEUE
         
         # Set prefetch to 1 (process one message at a time)
         channel.basic_qos(prefetch_count=1)
         
+        # 💡 CONTADOR DE CONTROL: Estructura local para mantener el estado en el hilo
+        # Usamos un diccionario o una lista para poder mutarlo dentro de la función anidada callback
+        state = {"messages_processed": 0}
+        MAX_MESSAGES_PER_WORKER = 20
         def callback(ch, method, properties, body):
             try:
                 message = json.loads(body)
@@ -201,24 +206,42 @@ def consume_jobs():
                 # Process the message
                 result = process_message(message)
                 
-                # Publish using the SAME channel we're consuming on
+                # Publicar usando el MISMO canal con el que escuchamos
                 publish_result(ch, result) 
                 
                 # Acknowledge
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 logger.info(f"Successfully processed job {message['job_id']}")
                 
+                # 💡 INCREMENTAR CONTADOR
+                state["messages_processed"] += 1
+                logger.info(f"Worker {WORKER_ID} progress: {state['messages_processed']}/{MAX_MESSAGES_PER_WORKER}")
+                
+                # 💡 CONTROL DE AUTO-DESTRUCCIÓN REGULADO
+                if state["messages_processed"] >= MAX_MESSAGES_PER_WORKER:
+                    logger.info(f"Reached limit of {MAX_MESSAGES_PER_WORKER} messages. Stopping consumer loop...")
+                    ch.stop_consuming() # Rompe el bucle inifinito de start_consuming()
+                
             except Exception as e:
                 logger.error(f"Error in callback: {e}")
+                # En colas clásicas, el requeue=True manda el mensaje al frente para que otro pod lo agarre
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         
+        # Consumo limpio para colas clásicas
         channel.basic_consume(
             queue=jobs_queue,
-            on_message_callback=callback,
+            on_message_callback=callback
         )
         
-        logger.info(f"Worker {WORKER_ID} listening on queue {jobs_queue}")
+        logger.info(f"Worker {WORKER_ID} listening on classic queue {jobs_queue} (Max: {MAX_MESSAGES_PER_WORKER} tasks)")
         channel.start_consuming()
+        
+        # 💡 CIERRE ELEGANTE DE CONEXIÓN
+        # Una vez que sale de start_consuming(), cerramos la conexión antes de que termine el script
+        if connection.is_open:
+            logger.info("Closing RabbitMQ connection cleanly...")
+            connection.close()
+        logger.info(f"Worker {WORKER_ID} finished its batch execution. Pod exiting.")
     
     except KeyboardInterrupt:
         logger.info(f"Worker {WORKER_ID} shutting down...")

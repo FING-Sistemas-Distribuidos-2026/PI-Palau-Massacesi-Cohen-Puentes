@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: telephone-api
-        image: juanignaciomassacesi/telephone-api:v1
+        image: lutespatella/telephone-api:v4
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

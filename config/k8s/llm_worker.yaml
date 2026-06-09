@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: telephone-llm-worker
-        image: juanignaciomassacesi/telephone-llm-worker:v1
+        image: lutespatella/telephone-llm_worker:v5
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

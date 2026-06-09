@@ -42,7 +42,7 @@ spec:
           - name: OLLAMA_MODEL        # Added "-" and fixed indentation
             value: llama3.2:1b
 
-  maxReplicaCount: 20
+  maxReplicaCount: 5
 
   triggers:
   - type: rabbitmq              # Added "-" and fixed indentation
@@ -50,7 +50,7 @@ spec:
       protocol: amqp
       queueName: telephone.jobs
       mode: QueueLength
-      value: "100"
+      value: "200"
     authenticationRef:
       name: rabbitmq-job-auth
 

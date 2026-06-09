@@ -27,8 +27,8 @@ DATABASE_URL        = os.getenv("DATABASE_URL",        "postgresql://user:devpas
 OLLAMA_URL          = os.getenv("OLLAMA_URL",          "http://ollama:11434")
 OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "llama3.2:1b")
 LOG_LEVEL           = os.getenv("LOG_LEVEL",           "INFO")
-BATCH_SIZE          = int(os.getenv("LLM_BATCH_SIZE",    "3"))
-BATCH_TIMEOUT_SEC   = float(os.getenv("LLM_BATCH_TIMEOUT", "20"))
+BATCH_TIMEOUT_SEC   = float(60)
+ADAPTIVE_SPLIT_THRESHOLD = 40
 
 QUEUE_NAME          = "telephone.results"
 EXCHANGE_NAME       = "telephone"
@@ -54,17 +54,144 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ---------------------------------------------------------------------------
 # Buffer en memoria y Locks de control de concurrencia
 # ---------------------------------------------------------------------------
-# Estructura del buffer protegida con estados de procesamiento
+# Cada job conserva todas las frases recibidas para poder reconstruir batches incrementales.
 job_buffers: dict = defaultdict(lambda: {
-    "phrases":   [],
-    "total":     0,
-    "received":  0,
-    "last_ts":   time.monotonic(),
+    "phrases": [],
+    "received": 0,
+    "last_ts": time.monotonic(),
     "batch_num": 0,
-    "is_processing": False, # Evita que el flusher duplique tareas activas
+    "processed_up_to": 0,
+    "expected_total": None,
+    "planned_total": 0,
+    "targets": [],
+    "target_index": 0,
+    "force_flush": False,
+    "is_processing": False,  # Evita que se lancen dos procesadores para el mismo job.
 })
 buffers_lock = threading.Lock()
 ollama_global_lock = threading.Lock() # Fuerza a Ollama a procesar de a UN lote a la vez
+
+
+def get_job_expected_total(job_id: str):
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            return job.num_workers
+        return None
+    finally:
+        db.close()
+
+
+def start_job_processor(job_id: str):
+    with buffers_lock:
+        buf = job_buffers.get(job_id)
+        if not buf or buf["is_processing"]:
+            return
+
+        buf["is_processing"] = True
+
+    threading.Thread(target=process_job_batches, args=(job_id,), daemon=True).start()
+
+
+def choose_batch_count(total_messages: int) -> int:
+    if total_messages <= 0:
+        return 0
+    desired = 5 if total_messages >= ADAPTIVE_SPLIT_THRESHOLD else 3
+    return min(desired, total_messages)
+
+
+def build_cumulative_targets(total_messages: int, batch_count: int) -> list[int]:
+    if total_messages <= 0 or batch_count <= 0:
+        return []
+
+    targets: list[int] = []
+    for i in range(1, batch_count + 1):
+        # Ceil(i * total / batch_count) sin usar math para mantener dependencias mínimas.
+        target = (i * total_messages + batch_count - 1) // batch_count
+        if not targets or target > targets[-1]:
+            targets.append(target)
+
+    if targets and targets[-1] != total_messages:
+        targets[-1] = total_messages
+
+    return targets
+
+
+def ensure_plan(buf: dict, total_messages: int):
+    batch_count = choose_batch_count(total_messages)
+    targets = build_cumulative_targets(total_messages, batch_count)
+    buf["planned_total"] = total_messages
+    buf["targets"] = targets
+    buf["target_index"] = 0
+    while buf["target_index"] < len(buf["targets"]) and buf["targets"][buf["target_index"]] <= buf["processed_up_to"]:
+        buf["target_index"] += 1
+
+
+def process_job_batches(job_id: str):
+    try:
+        while True:
+            with buffers_lock:
+                buf = job_buffers.get(job_id)
+                if not buf:
+                    return
+
+                available = len(buf["phrases"])
+                processed_up_to = buf["processed_up_to"]
+                expected_total = buf["expected_total"]
+
+                if expected_total is not None and available >= expected_total:
+                    if buf["planned_total"] != expected_total:
+                        ensure_plan(buf, expected_total)
+                elif buf["force_flush"] and available > processed_up_to:
+                    if buf["planned_total"] != available:
+                        ensure_plan(buf, available)
+                else:
+                    return
+
+                if buf["target_index"] >= len(buf["targets"]):
+                    return
+
+                target_count = buf["targets"][buf["target_index"]]
+                if available < target_count:
+                    return
+
+                buf["batch_num"] += 1
+                batch_num = buf["batch_num"]
+                batch_phrases = buf["phrases"][:target_count]
+                buf["target_index"] += 1
+
+            process_batch(job_id, batch_phrases, batch_num)
+
+            with buffers_lock:
+                buf = job_buffers.get(job_id)
+                if not buf:
+                    return
+
+                buf["processed_up_to"] = target_count
+                if buf["target_index"] >= len(buf["targets"]):
+                    buf["force_flush"] = False
+
+                db = SessionLocal()
+                try:
+                    job = db.query(Job).filter(Job.id == job_id).first()
+                finally:
+                    db.close()
+
+                if (
+                    job
+                    and job.status == "completed"
+                    and buf["processed_up_to"] >= job.num_workers
+                    and len(buf["phrases"]) >= job.num_workers
+                ):
+                    del job_buffers[job_id]
+                    log.info(f"[job={job_id[:8]}] Memoria volátil purgada tras completar todos los batches.")
+                    return
+    finally:
+        with buffers_lock:
+            buf = job_buffers.get(job_id)
+            if buf:
+                buf["is_processing"] = False
 
 # ---------------------------------------------------------------------------
 # Ollama
@@ -168,20 +295,11 @@ def process_batch(job_id: str, phrases: list[str], batch_num: int):
                 db.commit()
                 log.info(f"[job={job_id[:8]}] 🏁 Cierre relacional certificado: {total_frases_distorsionadas} frases en DB.")
 
-        # 4. Limpieza del buffer de ráfaga
-        with buffers_lock:
-            if job_id in job_buffers and not job_buffers[job_id]["phrases"]:
-                del job_buffers[job_id]
-                log.info(f"[job={job_id[:8]}] Memoria volátil purgada por inactividad del flujo.")
-
     except Exception as e:
         db.rollback()
         log.error(f"[job={job_id[:8]}] Error en la transacción de la DB: {e}")
     finally:
         db.close()
-
-# Tope seguro para Ollama. Más de 10 frases rotas confunden al modelo de 1B.
-MAX_BATCH_SIZE_OLLAMA = 10 
 
 # ---------------------------------------------------------------------------
 # RabbitMQ: callback por mensaje
@@ -200,30 +318,41 @@ def on_message(channel, method, properties, body):
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
-    flush_phrases   = None
-    flush_batch_num = None
+    should_start_processor = False
+    expected_total = None
+
+    # Evitamos consultas de DB bajo lock.
+    with buffers_lock:
+        buf = job_buffers[job_id]
+        expected_total = buf["expected_total"]
+
+    if expected_total is None:
+        expected_total = get_job_expected_total(job_id)
 
     with buffers_lock:
         buf = job_buffers[job_id]
+        if buf["expected_total"] is None:
+            buf["expected_total"] = expected_total
+
         buf["phrases"].append(distorted)
         buf["received"] += 1
         buf["last_ts"] = time.monotonic()
+        buf["force_flush"] = False
 
-        if len(buf["phrases"]) >= BATCH_SIZE or len(buf["phrases"]) >= MAX_BATCH_SIZE_OLLAMA:
-            buf["batch_num"] += 1
-            flush_phrases = buf["phrases"][:]
-            buf["phrases"] = []
-            flush_batch_num = buf["batch_num"]
+        if buf["expected_total"] is not None and len(buf["phrases"]) >= buf["expected_total"]:
+            buf["force_flush"] = True
+            if buf["planned_total"] != buf["expected_total"]:
+                buf["targets"] = []
+                buf["target_index"] = 0
+
+        if buf["force_flush"]:
+            should_start_processor = True
 
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
-    # Si se llenó un lote óptimo en caliente, se procesa de inmediato
-    if flush_phrases:
-        threading.Thread(
-            target=process_batch,
-            args=(job_id, flush_phrases, flush_batch_num),
-            daemon=True,
-        ).start()
+    # Si hay suficientes mensajes o ya llegó el total esperado, se procesa en serie.
+    if should_start_processor:
+        start_job_processor(job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +362,7 @@ def timeout_flusher():
     while True:
         time.sleep(1.0)
         now = time.monotonic()
+        jobs_to_start = []
         
         with buffers_lock:
             for job_id, buf in list(job_buffers.items()):
@@ -241,20 +371,13 @@ def timeout_flusher():
                 
                 # Si la manguera se quedó en silencio por el tiempo estipulado
                 if (now - buf["last_ts"]) >= BATCH_TIMEOUT_SEC:
-                    log.info(f"[job={job_id[:8]}] ⏱️ Silencio detectado. Procesando remanente de {len(buf['phrases'])} frases.")
-                    
-                    frases_remanentes = buf["phrases"][:]
-                    buf["phrases"] = []
-                    
-                    sub_lotes = [frases_remanentes[i:i + MAX_BATCH_SIZE_OLLAMA] for i in range(0, len(frases_remanentes), MAX_BATCH_SIZE_OLLAMA)]
-                    
-                    for lote in sub_lotes:
-                        buf["batch_num"] += 1
-                        threading.Thread(
-                            target=process_batch,
-                            args=(job_id, lote, buf["batch_num"]),
-                            daemon=True,
-                        ).start()
+                    # log.info(f"[job={job_id[:8]}] ⏱️ Silencio detectado. Reanudando procesamiento incremental con {len(buf['phrases'])} frases acumuladas.")
+                    buf["force_flush"] = True
+                if buf["phrases"] and buf["force_flush"] and not buf["is_processing"]:
+                    jobs_to_start.append(job_id)
+
+        for job_id in jobs_to_start:
+            start_job_processor(job_id)
 
 # ---------------------------------------------------------------------------
 # Esperas con retry
@@ -327,7 +450,10 @@ def wait_for_rabbitmq(max_retries=20, delay=5) -> pika.BlockingConnection:
 # ---------------------------------------------------------------------------
 def main():
     log.info("=== llm-worker iniciando ===")
-    log.info(f"BATCH_SIZE={BATCH_SIZE} | BATCH_TIMEOUT={BATCH_TIMEOUT_SEC}s | MODEL={OLLAMA_MODEL}")
+    log.info(
+        f"BATCH_MODE=adaptive(3|5) | SPLIT_THRESHOLD={ADAPTIVE_SPLIT_THRESHOLD} | "
+        f"BATCH_TIMEOUT={BATCH_TIMEOUT_SEC}s | MODEL={OLLAMA_MODEL}"
+    )
 
     wait_for_postgres()
     init_db()
