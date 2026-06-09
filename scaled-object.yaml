@@ -2,18 +2,36 @@ apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
   name: telephone-worker-scaler
-  namespace: default
+  namespace: telephone-distortion
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: telephone-worker-deployment # <--- Tu deployment v2
-  minReplicaCount: 2   # En paz, solo 2 worker encendido
-  maxReplicaCount: 15  # El tope que le permites automático para no fundir tu CPU
+    name: telephone-worker-deployment
+  minReplicaCount: 0  
+  maxReplicaCount: 8  
+  # cooldownPeriod: cuántos segundos espera KEDA antes de bajar a 0
+  # cuando la cola se vacía. 60s da margen para ráfagas seguidas.
+  cooldownPeriod: 60
   triggers:
   - type: rabbitmq
     metadata:
-      # Dependiendo de si mides por mensajes listos o longitud del Stream
-      queueName: telephone.results 
-      value: "5" # Cada 5 mensajes acumulados, KEDA mete 1 worker más
-      host: amqp://guest:guest@rabbitmq.default.svc.cluster.local:5672/%2F
+      protocol: amqp
+      queueName: telephone.jobs
+      mode: QueueLength
+      value: "100"   # 1 worker nuevo por cada 100 mensajes en cola
+                     # 100 msgs → 1 pod, 200 → 2, ..., 800+ → 8 pods
+    authenticationRef:
+      name: rabbitmq-trigger-auth
+
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-trigger-auth
+  namespace: telephone-distortion
+spec:
+  secretTargetRef:
+  - parameter: host
+    name: rabbitmq-keda-secret
+    key: host
