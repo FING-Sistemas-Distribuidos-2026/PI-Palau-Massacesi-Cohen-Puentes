@@ -24,7 +24,7 @@ console = Console()
 LAST_SENT_JOB_ID: str | None = None
 
 # API Configuration
-API_URL = "http://localhost:1234"
+API_URL = "http://10.66.1.32:80"
 #API_URL = "http://telephone_api:8000"
 REQUEST_TIMEOUT = 5
 
