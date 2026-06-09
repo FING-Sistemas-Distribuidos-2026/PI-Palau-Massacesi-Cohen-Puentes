@@ -32,11 +32,10 @@ spec:
       # --- CLAVE PARA TU NODO ESPECIAL ---
       tolerations:
       - key: "reservado"
-        operator: "Equal"
-        value: "exclusivo"
+        operator: "Exists"
         effect: "NoSchedule"
       nodeSelector:
-        funcion: nocompila-special-node
+        kubernetes.io/hostname: nocompila-special-node
 
       containers:
       - name: ollama
