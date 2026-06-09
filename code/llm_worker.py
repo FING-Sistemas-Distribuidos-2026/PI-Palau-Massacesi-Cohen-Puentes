@@ -197,60 +197,51 @@ def process_job_batches(job_id: str):
 # Ollama
 # ---------------------------------------------------------------------------
 def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, str]:
-    # Unimos las frases del lote separadas por un salto de línea limpio
+    # Unimos las frases del lote
     lineas_entrada = "\n".join(phrases)
     
-    url = f"{OLLAMA_URL}/api/chat"
     
-    payload = {
-        "model": OLLAMA_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Eres un detective de mensajes. "
-                    "El usuario te dará varias versiones distorsionadas de un mismo mensaje original. "
-                    "Tu tarea es deducir cuál era el mensaje original. "
-                    "REGLAS ESTRICTAS:\n"
-                    "- Responde SOLO con el mensaje original reconstruido sin introducciones, viñetas ni contenido extra"
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Estas {len(phrases)} frases son versiones distorsionadas del mismo mensaje original:\n"
-                    f"{lineas_entrada}\n\n"
-                    "¿Cuál era el mensaje original? Contesta únicamente con el mensaje"
-                )
-            }
-        ],
-        "stream": False,
-        "options": {
-            "temperature": 0.3,
-            "top_p": 0.1,
-            "num_predict": 150,
-            "num_ctx": 3072
-        }
-    }
-
+    prompt = (
+        "<|im_start|>system\n"
+        "Eres un corrector de texto. Une y corrige las variantes en una única frase limpia en español. "
+        "Responde SOLO con la frase corregida. No hables, no expliques, no uses comillas.<|im_end|>\n"
+        "<|im_start|>user\n"
+        f"Variantes:\n{lineas_entrada}\n\n"
+        "Frase corregida:<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    
     with ollama_global_lock:
         try:
-            resp = requests.post(url, json=payload, timeout=300)
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/generate", 
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    # Bajamos un poco num_predict porque una frase no debería tomar 128 tokens
+                    "options": {
+                        "temperature": 0.1,  # Más bajo para que sea más determinista y obedezca mejor
+                        "top_p": 0.1, 
+                        "num_predict": 64, 
+                        "num_ctx": 2048
+                    },
+                }, 
+                timeout=300
+            )
             resp.raise_for_status()
             data = resp.json()
             raw = json.dumps(data, ensure_ascii=False)
             
-            log.info(f"[DEBUG CHAT CONTENT]: {raw}")
+            log.info(f"[DEBUG GENERATE CONTENT]: {raw}")
 
+            response_text = data.get("response", "").strip()
             guess = ""
-            message_obj = data.get("message", {})
 
-            if "content" in message_obj and message_obj["content"].strip():
-                # Obtenemos la respuesta limpia y podamos espacios sobrantes
-                lines = [l.strip() for l in message_obj["content"].strip().split("\n") if l.strip()]
-                # Removemos guiones o viñetas molestas que Llama a veces mete por reflejo
-                lines_cleaned = [re.sub(r"^[-*•]\s*", "", l) for l in lines]
-                guess = "\n".join(lines_cleaned)
+            if response_text:
+                lines = [l.strip() for l in response_text.split("\n") if l.strip()]
+                lines_cleaned = [re.sub(r"^[-*•]\s*|^[\"']|[\"']$", "", l).strip() for l in lines]
+                guess = " ".join(lines_cleaned) 
 
             if not guess:
                 guess = "[No se obtuvo respuesta limpia del modelo]"
