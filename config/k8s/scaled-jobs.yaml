@@ -40,7 +40,7 @@ spec:
           - name: OLLAMA_URL          # Added "-" and fixed indentation
             value: http://ollama.telephone-distortion.svc.cluster.local:11434/
           - name: OLLAMA_MODEL        # Added "-" and fixed indentation
-            value: llama3.2:1b
+            value: qwen2.5:0.5b
 
   maxReplicaCount: 5
 

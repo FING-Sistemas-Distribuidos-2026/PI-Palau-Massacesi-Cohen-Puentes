@@ -45,7 +45,7 @@ spec:
           name: api
         env:
         - name: OLLAMA_MODELS
-          value: "llama3.2:1b"
+          value: "qwen2.5:0.5b"
         resources:
           requests:
             cpu: "1"

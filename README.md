@@ -131,7 +131,7 @@ docker compose run --rm cli
 Traer el modelo de Ollama en local:
 
 ```bash
-docker compose exec ollama ollama pull llama3.2:1b
+docker compose exec ollama ollama pull qwen2.5:0.5b
 ```
 
 ## Despliegue en Kubernetes
@@ -175,7 +175,7 @@ kubectl apply -f config/k8s/
 Traer el modelo de Ollama en Kubernetes:
 
 ```bash
-kubectl -n telephone-distortion exec deploy/ollama-deployment -- ollama pull llama3.2:1b
+kubectl -n telephone-distortion exec deploy/ollama-deployment -- ollama pull qwen2.5:0.5b
 ```
 
 

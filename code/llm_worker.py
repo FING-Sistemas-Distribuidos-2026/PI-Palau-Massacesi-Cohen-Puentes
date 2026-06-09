@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 RABBITMQ_URL        = os.getenv("RABBITMQ_URL",        "amqp://guest:guest@rabbitmq:5672/%2F")
 DATABASE_URL        = os.getenv("DATABASE_URL",        "postgresql://user:devpassword123@postgres:5432/telephone_db")
 OLLAMA_URL          = os.getenv("OLLAMA_URL",          "http://ollama:11434")
-OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "llama3.2:1b")
+OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "qwen2.5:0.5b")
 LOG_LEVEL           = os.getenv("LOG_LEVEL",           "INFO")
 BATCH_TIMEOUT_SEC   = float(120)
 ADAPTIVE_SPLIT_THRESHOLD = 40

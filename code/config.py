@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     
     # Ollama Configuration
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:1b"
+    ollama_model: str = "qwen2.5:0.5b"
     
     # API Configuration
     api_host: str = "0.0.0.0"

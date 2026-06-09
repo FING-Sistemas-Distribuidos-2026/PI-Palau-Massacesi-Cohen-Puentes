@@ -42,7 +42,7 @@ spec:
         - name: OLLAMA_URL
           value: http://ollama.telephone-distortion.svc.cluster.local:11434
         - name: OLLAMA_MODEL
-          value: llama3.2:1b
+          value: qwen2.5:0.5b
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:

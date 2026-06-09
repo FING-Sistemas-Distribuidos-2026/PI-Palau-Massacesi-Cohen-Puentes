@@ -125,7 +125,7 @@ Consideraciones para Ollama:
 - Asignar PVC para modelos.
 - Definir requests/limits de CPU y memoria.
 - Si usas GPU, agregar nodeSelector/tolerations/runtimeClass segun tu cluster.
-- Pre-cargar modelo llama3.2:1b en init o job de bootstrap para reducir latencia inicial.
+- Pre-cargar modelo qwen2.5:0.5b en init o job de bootstrap para reducir latencia inicial.
 
 ## 6. Desplegar la aplicacion (API, Worker, LLM Worker)
 
