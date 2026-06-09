@@ -30,14 +30,13 @@ spec:
         app: ollama
     spec:
       # --- CLAVE PARA TU NODO ESPECIAL ---
-      # tolerations:
-      # - key: "reservado"
-      #   operator: "Equal"
-      #   value: "exclusivo"
-      #   effect: "NoSchedule"
-      # nodeSelector:
-      #   funcion: app-especial
-      # ------------------------------------
+      tolerations:
+      - key: "reservado"
+        operator: "Equal"
+        value: "exclusivo"
+        effect: "NoSchedule"
+      nodeSelector:
+        funcion: nocompila-special-node
 
       containers:
       - name: ollama
@@ -50,11 +49,11 @@ spec:
           value: "llama3.2:1b"
         resources:
           requests:
-            cpu: "1.5"
-            memory: "1Gi"
+            cpu: "1"
+            memory: "2Gi"
           limits:
-            cpu: "3"
-            memory: "3Gi"
+            cpu: "2"
+            memory: "3.1Gi"
 
         # Montamos el volumen persistente en la ruta donde Ollama guarda los modelos
         volumeMounts:
