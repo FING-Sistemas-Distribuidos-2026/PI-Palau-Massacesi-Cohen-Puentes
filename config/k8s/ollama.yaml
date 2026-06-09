@@ -48,23 +48,12 @@ spec:
         env:
         - name: OLLAMA_MODELS
           value: "llama3.2:1b"
-        
-        # Como pusiste 'gpu: enabled: false', correrá puramente en CPU.
-        # No le pasamos recursos de GPU, así que Ollama usará los hilos de la CPU por defecto.
-        #resources:
-        #  limits:
-        #    cpu: "4"
-        #    memory: "3Gi"
-        #  requests:
-        #    cpu: "2"
-        #    memory: "2Gi"
-        
         resources:
           requests:
-            cpu: "500m"
+            cpu: "1.5"
             memory: "1Gi"
           limits:
-            cpu: "2"
+            cpu: "3"
             memory: "3Gi"
 
         # Montamos el volumen persistente en la ruta donde Ollama guarda los modelos

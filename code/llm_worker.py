@@ -27,7 +27,7 @@ DATABASE_URL        = os.getenv("DATABASE_URL",        "postgresql://user:devpas
 OLLAMA_URL          = os.getenv("OLLAMA_URL",          "http://ollama:11434")
 OLLAMA_MODEL        = os.getenv("OLLAMA_MODEL",        "llama3.2:1b")
 LOG_LEVEL           = os.getenv("LOG_LEVEL",           "INFO")
-BATCH_TIMEOUT_SEC   = float(60)
+BATCH_TIMEOUT_SEC   = float(120)
 ADAPTIVE_SPLIT_THRESHOLD = 40
 
 QUEUE_NAME          = "telephone.results"
@@ -228,13 +228,14 @@ def call_ollama(phrases: list[str], job_id: str, batch_num: int) -> tuple[str, s
         "options": {
             "temperature": 0.3,
             "top_p": 0.1,
-            "num_predict": 150
+            "num_predict": 150,
+            "num_ctx": 3072
         }
     }
 
     with ollama_global_lock:
         try:
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = requests.post(url, json=payload, timeout=300)
             resp.raise_for_status()
             data = resp.json()
             raw = json.dumps(data, ensure_ascii=False)
