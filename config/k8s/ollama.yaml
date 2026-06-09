@@ -53,7 +53,7 @@ spec:
             memory: "2Gi"
           limits:
             cpu: "2"
-            memory: "3.1Gi"
+            memory: "3Gi"
 
         # Montamos el volumen persistente en la ruta donde Ollama guarda los modelos
         volumeMounts:

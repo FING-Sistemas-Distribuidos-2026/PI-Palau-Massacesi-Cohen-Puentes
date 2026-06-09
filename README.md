@@ -130,6 +130,12 @@ CLI dentro de compose:
 docker compose run --rm cli
 ```
 
+Traer el modelo de Ollama en local:
+
+```bash
+docker compose exec ollama ollama pull llama3.2:1b
+```
+
 ## Despliegue en Kubernetes
 
 Orden recomendado de despliegue:
@@ -147,17 +153,33 @@ Exposicion externa:
 
 Comandos base:
 
+1) Crear namespace y secretos:
+
 ```bash
 kubectl apply -f config/k8s/namespace.yaml
 kubectl apply -f config/k8s/secrets.yaml
-kubectl apply -f config/k8s/postgres.yaml
-kubectl apply -f config/k8s/rabbit.yaml
-kubectl apply -f config/k8s/ollama.yaml
-kubectl apply -f config/k8s/api.yaml
-kubectl apply -f config/k8s/worker.yaml
-kubectl apply -f config/k8s/llm_worker.yaml
-kubectl apply -f config/k8s/scaled-jobs.yaml
 ```
+
+2) Instalar KEDA:
+
+```bash
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda --namespace keda --create-namespace
+```
+
+3) Aplicar el resto de los manifiestos en [config/k8s/](config/k8s/):
+
+```bash
+kubectl apply -f config/k8s/
+```
+
+Traer el modelo de Ollama en Kubernetes:
+
+```bash
+kubectl -n telephone-distortion exec deploy/ollama-deployment -- ollama pull llama3.2:1b
+```
+
 
 Verificacion:
 
