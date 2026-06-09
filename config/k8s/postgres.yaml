@@ -50,6 +50,8 @@ spec:
             secretKeyRef:
               name: credentials
               key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         volumeMounts:
         - name: postgres-volume
           mountPath: /var/lib/postgresql/data  # ruta estándar de Postgres
